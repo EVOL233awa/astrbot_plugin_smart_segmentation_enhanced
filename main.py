@@ -2,7 +2,6 @@
 from __future__ import annotations
 import asyncio
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -23,11 +22,11 @@ from .segmentation import (
     parse_segments_from_model_output,
     strip_thinking_content,
     normalize_response_text_for_key,
-    merge_segments_balancing_brackets,
-    split_segments_at_bracket_boundaries,
+    normalize_content_key,
     # 导入非自然语言检测与本地逻辑切分工具
     is_non_natural_language,
     local_fallback_split,
+    stabilize_segment_lengths,
 )
 
 _PREPARED_SEGMENT_TTL_SECONDS = 60.0
@@ -38,6 +37,7 @@ _PENDING_EXTRA_KEY = "smart_segmentation_pending_id"
 @dataclass(slots=True)
 class SegmentationSettings:
     enabled: bool = True
+    use_local_only: bool = False
     provider_id: str = ""
     style: str = "natural"
     min_length: int = 15
@@ -48,6 +48,7 @@ class SegmentationSettings:
     delay_base: float = 0.35
     delay_per_char: float = 0.015
     delay_max: float = 1.2
+    max_chars_per_segment: int = 180
 
 
 @dataclass(slots=True)
@@ -55,6 +56,7 @@ class PreparedSegments:
     segments: list[str]
     raw_norm_text: str  # 缓存此分段对应的原始文本规范化表示，用作自愈拼合时的唯一基准
     expires_at: float
+    match_key: str = ""
 
 
 @dataclass(slots=True)
@@ -65,6 +67,7 @@ class PendingFollowUp:
     delay_per_char: float
     delay_max: float
     expires_at: float
+    lock: asyncio.Lock | None = None
 
 
 class SmartSegmentationPlugin(Star):
@@ -77,7 +80,7 @@ class SmartSegmentationPlugin(Star):
         self._prepared_segments: dict[tuple[str, str], PreparedSegments] = {}
         self._pending_follow_ups: dict[str, PendingFollowUp] = {}
         self._active_follow_up_tasks: set[asyncio.Task[Any]] = set()
-        self._send_guards: dict[str, int] = {}
+        self._session_locks: dict[str, asyncio.Lock] = {}
 
     @filter.on_llm_response()
     async def on_llm_response(
@@ -94,14 +97,19 @@ class SmartSegmentationPlugin(Star):
         if not self._should_segment_text(text, settings):
             return
 
+        # 仅在本地高精切分模式下，完全不调用分段模型。
+        if settings.use_local_only:
+            logger.info("智能分段已启用仅本地高精切分模式，跳过分段模型调用")
+            segments = local_fallback_split(text, settings.max_segments)
         # 在 LLM 处理前拦截非自然语言（如 JSON、代码块），防止小参数模型产生 Few-Shot 样例幻觉
-        if is_non_natural_language(text):
+        elif is_non_natural_language(text):
             logger.info("检测到非自然语言（JSON/代码等），跳过 LLM 调用，直接启用本地高精切分兜底")
             segments = local_fallback_split(text, settings.max_segments)
         else:
             provider_id = await self._resolve_provider_id(event, settings)
             if not provider_id:
                 logger.warning("智能分段未找到可用 provider_id，跳过本次分段")
+                self._store_skip_segment(event.unified_msg_origin, text)
                 return
 
             try:
@@ -118,12 +126,14 @@ class SmartSegmentationPlugin(Star):
                     "智能分段 LLM 调用超时（> %.2fs），已跳过本次回复",
                     settings.timeout_seconds,
                 )
+                self._store_skip_segment(event.unified_msg_origin, text)
                 return
             except Exception as exc:
                 logger.error("智能分段 LLM 调用失败: %s", exc, exc_info=True)
+                self._store_skip_segment(event.unified_msg_origin, text)
                 return
 
-        if not segments or len(segments) <= 1:
+        if not segments:
             return
 
         self._store_prepared_segments(event.unified_msg_origin, text, segments)
@@ -136,9 +146,6 @@ class SmartSegmentationPlugin(Star):
         if settings is None:
             return
 
-        if self._is_session_guarded(event.unified_msg_origin):
-            return
-
         result = event.get_result()
         if result is None or not self._is_model_text_result(result):
             return
@@ -147,29 +154,52 @@ class SmartSegmentationPlugin(Star):
         if not outbound_text:
             return
 
-        # 传入最大分段数与最小长度参数，以支持自愈拼接决策及本地高精兜底切分
-        segments = self._pop_prepared_segments(
-            event.unified_msg_origin, 
-            outbound_text,
-            min_length=settings.min_length,
-            max_segments=settings.max_segments
-        )
-        if not segments or len(segments) <= 1:
-            return
+        session = event.unified_msg_origin
+        lock = self._session_locks.get(session)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._session_locks[session] = lock
+        await lock.acquire()
+        follow_up_holds_lock = False
+        try:
+            # 传入最大分段数与最小长度参数，以支持自愈拼接决策及本地高精兜底切分
+            segments = self._pop_prepared_segments(
+                event.unified_msg_origin, 
+                outbound_text,
+                min_length=settings.min_length,
+                max_segments=settings.max_segments
+            )
+            if not segments or len(segments) <= 1:
+                return
 
-        first_segment = segments[0]
-        follow_up_segments = segments[1:]
-        if not follow_up_segments:
-            return
+            segments = stabilize_segment_lengths(
+                segments,
+                max_segments=settings.max_segments,
+                max_chars_per_segment=settings.max_chars_per_segment,
+            )
+            if not segments or len(segments) <= 1:
+                return
 
-        result.chain = [Plain(first_segment)]
-        pending_id = self._register_pending_follow_up(
-            session=event.unified_msg_origin,
-            segments=follow_up_segments,
-            settings=settings,
-        )
-        event.set_extra(_PENDING_EXTRA_KEY, pending_id)
-        logger.info("智能分段首段已替换，登记 %s 条补发消息", len(follow_up_segments))
+            first_segment = segments[0]
+            follow_up_segments = segments[1:]
+            if not follow_up_segments:
+                return
+
+            result.chain = [Plain(first_segment)]
+            pending_id = self._register_pending_follow_up(
+                session=event.unified_msg_origin,
+                segments=follow_up_segments,
+                settings=settings,
+            )
+            event.set_extra(_PENDING_EXTRA_KEY, pending_id)
+            pending = self._pending_follow_ups.get(pending_id)
+            if pending is not None:
+                pending.lock = lock
+                follow_up_holds_lock = True
+            logger.info("智能分段首段已替换，登记 %s 条补发消息", len(follow_up_segments))
+        finally:
+            if not follow_up_holds_lock:
+                lock.release()
 
     @filter.after_message_sent()
     async def after_message_sent(self, event: AstrMessageEvent) -> None:
@@ -182,7 +212,11 @@ class SmartSegmentationPlugin(Star):
         if pending is None or not pending.segments:
             return
 
-        task = asyncio.create_task(self._run_follow_up_segments(pending))
+        try:
+            task = asyncio.create_task(self._run_follow_up_segments(pending))
+        except Exception:
+            self._release_pending_lock(pending)
+            raise
         self._track_follow_up_task(task)
 
     async def terminate(self) -> None:
@@ -193,8 +227,10 @@ class SmartSegmentationPlugin(Star):
         await self._drain_tasks()
         self._active_follow_up_tasks.clear()
         self._prepared_segments.clear()
+        for pending in list(self._pending_follow_ups.values()):
+            self._release_pending_lock(pending)
         self._pending_follow_ups.clear()
-        self._send_guards.clear()
+        self._session_locks.clear()
 
     def _get_config_value(self, key: str, default: Any) -> Any:
         """从插件配置中安全获取指定键的值，提供降级默认值。"""
@@ -217,6 +253,10 @@ class SmartSegmentationPlugin(Star):
 
         return SegmentationSettings(
             enabled=enabled,
+            use_local_only=self._as_bool(
+                self._get_config_value("use_local_only", False),
+                False,
+            ),
             provider_id=str(self._get_config_value("provider_id", "") or "").strip(),
             style=style,
             min_length=max(
@@ -226,6 +266,13 @@ class SmartSegmentationPlugin(Star):
             max_segments=max(
                 1,
                 self._as_int(self._get_config_value("max_segments", 8), 8),
+            ),
+            max_chars_per_segment=max(
+                20,
+                self._as_int(
+                    self._get_config_value("max_chars_per_segment", 180),
+                    180,
+                ),
             ),
             temperature=self._as_float(
                 self._get_config_value("temperature", 0.3),
@@ -394,6 +441,7 @@ class SmartSegmentationPlugin(Star):
             raw_text,
             fallback_text=text,
             max_segments=settings.max_segments,
+            max_chars_per_segment=settings.max_chars_per_segment,
         )
 
     def _store_prepared_segments(
@@ -414,7 +462,12 @@ class SmartSegmentationPlugin(Star):
             segments=list(segments),
             raw_norm_text=normalize_response_text_for_key(response_text),
             expires_at=time.monotonic() + _PREPARED_SEGMENT_TTL_SECONDS,
+            match_key=normalize_content_key(response_text),
         )
+
+    def _store_skip_segment(self, session: str, response_text: str) -> None:
+        """缓存本次不分段的负向结果，避免装饰阶段被本地兜底二次拆分。"""
+        self._store_prepared_segments(session, response_text, [])
 
     def _pop_prepared_segments(
         self, 
@@ -437,15 +490,21 @@ class SmartSegmentationPlugin(Star):
         if entry is not None:
             return list(entry.segments)
 
-        # 2. 顺序贪婪自愈（应对多轮 Tool Loop 被框架拼接起来合并发送的情况）
-        # 收集该会话中当前缓存的全部可用缓存项
+        # 2. 顺序自愈：先用内容签名精确匹配，再按内容签名前缀贪婪拼接。
+        # 内容签名忽略空白、大小写与标点，可覆盖 Markdown 清洗和 Tool Loop 合并带来的文本差异。
         session_entries = {
             key: val
             for key, val in self._prepared_segments.items()
             if key[0] == normalized_session
         }
         if session_entries:
-            remaining = norm_outbound.strip()
+            outbound_match_key = normalize_content_key(outbound_text)
+            for key, entry in session_entries.items():
+                if entry.match_key and entry.match_key == outbound_match_key:
+                    self._prepared_segments.pop(key, None)
+                    return list(entry.segments)
+
+            remaining = outbound_match_key
             assembled_segs = []
             matched_keys = []
             while remaining:
@@ -453,24 +512,21 @@ class SmartSegmentationPlugin(Star):
                 best_match_segs = None
                 best_match_key = None
                 for key, val in session_entries.items():
-                    norm_piece = val.raw_norm_text
-                    if norm_piece and remaining.startswith(norm_piece):
-                        piece_length = len(norm_piece)
+                    piece = val.match_key
+                    if piece and remaining.startswith(piece):
+                        piece_length = len(piece)
                         if piece_length > best_match_len:
-                            # 保证是在空格边界或结束边界上匹配，防止单词中继切分错乱
-                            if piece_length == len(remaining) or remaining[piece_length] == ' ':
-                                best_match_len = piece_length
-                                best_match_segs = val.segments
-                                best_match_key = key
-                if best_match_segs and best_match_key:
+                            best_match_len = piece_length
+                            best_match_segs = val.segments
+                            best_match_key = key
+                if best_match_segs is not None and best_match_key:
                     assembled_segs.extend(best_match_segs)
-                    remaining = remaining[best_match_len:].strip()
+                    remaining = remaining[best_match_len:]
                     matched_keys.append(best_match_key)
                 else:
                     break
 
             if not remaining and assembled_segs:
-                # 完美复原合并消息！清空这部分已消费的子缓存，避免残留过期
                 for m_key in matched_keys:
                     self._prepared_segments.pop(m_key, None)
                 return assembled_segs
@@ -523,6 +579,12 @@ class SmartSegmentationPlugin(Star):
         self._prune_expired_pending_follow_ups()
         return self._pending_follow_ups.pop(pending_id, None)
 
+    def _release_pending_lock(self, pending: PendingFollowUp) -> None:
+        """释放 pending 持有的会话串行锁，避免补发任务异常后锁泄漏。"""
+        if pending.lock is not None and pending.lock.locked():
+            pending.lock.release()
+        pending.lock = None
+
     def _prune_expired_pending_follow_ups(self) -> None:
         """扫描并清理所有因超时失效的延迟补发上下文缓存。"""
         if not self._pending_follow_ups:
@@ -532,7 +594,9 @@ class SmartSegmentationPlugin(Star):
             key for key, entry in self._pending_follow_ups.items() if entry.expires_at <= now
         ]
         for key in expired_keys:
-            self._pending_follow_ups.pop(key, None)
+            entry = self._pending_follow_ups.pop(key, None)
+            if entry is not None:
+                self._release_pending_lock(entry)
 
     def _track_follow_up_task(self, task: asyncio.Task[Any]) -> None:
         """追踪正在后台运行的异步补发任务，并在其完成后清理任务句柄。"""
@@ -548,52 +612,27 @@ class SmartSegmentationPlugin(Star):
     async def _run_follow_up_segments(self, pending: PendingFollowUp) -> None:
         """后台异步主循环，按照时间延迟算法逐条补发余下的消息分段。"""
         try:
-            with self._guard_session(pending.session):
-                for segment in pending.segments:
-                    delay = calculate_send_delay(
-                        segment,
-                        pending.delay_base,
-                        pending.delay_per_char,
-                        pending.delay_max,
-                    )
-                    if delay > 0:
-                        await asyncio.sleep(delay)
+            for segment in pending.segments:
+                delay = calculate_send_delay(
+                    segment,
+                    pending.delay_base,
+                    pending.delay_per_char,
+                    pending.delay_max,
+                )
+                if delay > 0:
+                    await asyncio.sleep(delay)
 
-                    sent = await self.context.send_message(
-                        pending.session,
-                        MessageChain([Plain(segment)]),
-                    )
-                    if not sent:
-                        logger.error("智能分段补发失败，会话: %s", pending.session)
-                        return
+                sent = await self.context.send_message(
+                    pending.session,
+                    MessageChain([Plain(segment)]),
+                )
+                if not sent:
+                    logger.error("智能分段补发失败，会话: %s", pending.session)
+                    return
         except asyncio.CancelledError:
             logger.warning("智能分段后台补发任务被取消，会话: %s", pending.session)
             raise
         except Exception as exc:
             logger.error("智能分段后台补发任务异常: %s", exc, exc_info=True)
-
-    @contextmanager
-    def _guard_session(self, session: str):
-        """会话事务保护锁，通过引用计数保护会话不被并发的外部逻辑打碎。"""
-        normalized_session = str(session or "").strip()
-        if not normalized_session:
-            yield
-            return
-
-        self._send_guards[normalized_session] = self._send_guards.get(
-            normalized_session,
-            0,
-        ) + 1
-        try:
-            yield
         finally:
-            remaining = self._send_guards.get(normalized_session, 0) - 1
-            if remaining > 0:
-                self._send_guards[normalized_session] = remaining
-            else:
-                self._send_guards.pop(normalized_session, None)
-
-    def _is_session_guarded(self, session: str) -> bool:
-        """检查当前会话是否处于补发保护锁定状态。"""
-        normalized_session = str(session or "").strip()
-        return bool(normalized_session and self._send_guards.get(normalized_session, 0))
+            self._release_pending_lock(pending)
