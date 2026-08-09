@@ -33,6 +33,8 @@ BRACKET_PAIRS: tuple[tuple[str, str], ...] = (
     ("[", "]"),
 )
 
+_LEFT_BOUNDARY_CHARS = frozenset("（([【“‘「『《")
+
 STYLE_GUIDES = {
     "natural": "像和朋友微信聊天一样自然地分条发送。有的消息短有的长，节奏随意。",
     "conservative": "偏沉稳的发消息风格，一条消息说比较完整的内容，不会频繁发短消息。",
@@ -64,7 +66,7 @@ def is_kaomoji_or_pure_punct(text: str) -> bool:
         return True
         
     # 3. 常见颜文字特征检测 (排除了中文后，再检测连续符号)
-    if len(text) <= 10 and re.search(r"[><☆✨ㅠ^°¯\*_\-\|/\\]{2,}", text):
+    if len(text) <= 10 and re.search(r"[><✨☆ㅠ^°¯\*_\-\|/\\]{2,}", text):
         return True
         
     # 4. 经典字母颜文字白名单
@@ -165,6 +167,7 @@ def is_markdown_heavy(text: str) -> bool:
     md_patterns = [
         r"^#{1,6}\s", r"^[\*\-\+]\s", r"^\d+\.\s", r"^>\s",
         r"^`{3}", r"^\|.*\|", r"^[-*_]{3,}$",
+        r"^\s*[{\[]", r'^\s*"[^"]+"\s*:',
     ]
     md_line_count = 0
     for line in lines:
@@ -400,6 +403,132 @@ def normalize_response_text_for_key(text: str) -> str:
     return " ".join(cleaned.split())
 
 
+def normalize_content_key(text: str) -> str:
+    """生成忽略空白、大小写与标点的内容签名，用于缓存容错匹配。"""
+    cleaned = strip_thinking_content(str(text or ""))
+    return "".join(char.lower() for char in cleaned if char.isalnum())
+
+
+def reconstruct_segments_from_model_output(
+    model_segments: list[str],
+    original_text: str,
+    max_segments: int | str = 0,
+) -> list[str] | None:
+    """用模型输出作为切分边界，从原始回复重建带完整标点的分段。"""
+    try:
+        max_segs = int(max_segments) if max_segments is not None else 0
+    except (ValueError, TypeError):
+        max_segs = 0
+
+    original = str(original_text or "")
+    if not original or not model_segments:
+        return None
+
+    orig_chars = [
+        (char, index) for index, char in enumerate(original) if char.isalnum()
+    ]
+    if not orig_chars:
+        return None
+
+    orig_sig = "".join(char.lower() for char, _ in orig_chars)
+    orig_positions = [index for _, index in orig_chars]
+    matches: list[tuple[int, int]] = []
+    cursor = 0
+
+    for segment in model_segments:
+        seg_sig = normalize_content_key(segment)
+        if not seg_sig:
+            continue
+        pos = orig_sig.find(seg_sig, cursor)
+        if pos == -1:
+            return None
+        matches.append((pos, pos + len(seg_sig)))
+        cursor = pos + len(seg_sig)
+
+    if not matches:
+        return None
+
+    starts = [0]
+    for i in range(1, len(matches)):
+        raw_start = orig_positions[matches[i][0]]
+        start = raw_start
+        while start > 0 and (
+            original[start - 1].isspace()
+            or original[start - 1] in _LEFT_BOUNDARY_CHARS
+        ):
+            start -= 1
+        starts.append(start)
+
+    segments = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else len(original)
+        part = original[start:end].strip()
+        if part:
+            segments.append(part)
+
+    if not segments:
+        return None
+    if max_segs > 0 and len(segments) > max_segs:
+        return normalize_segments(segments, max_segs)
+    return segments
+
+
+def _split_overlong_segment(segment: str, max_chars: int) -> list[str]:
+    """将单条超长消息按标点或空白二次拆分，保留原始标点。"""
+    sub_segments = local_fallback_split(segment, 0)
+    if len(sub_segments) > 1:
+        return sub_segments
+    if len(segment) <= max_chars:
+        return [segment]
+
+    parts = []
+    remaining = segment
+    while len(remaining) > max_chars:
+        cut = max_chars
+        for separator in ("\n", "，", ",", "、", "；", ";", "。", "！", "？", " "):
+            idx = remaining.rfind(separator, 0, cut)
+            if idx > max_chars // 2:
+                cut = idx + len(separator)
+                break
+        parts.append(remaining[:cut].strip())
+        remaining = remaining[cut:].strip()
+    if remaining:
+        parts.append(remaining)
+    return parts
+
+
+def stabilize_segment_lengths(
+    segments: list[str],
+    *,
+    max_segments: int | str = 0,
+    max_chars_per_segment: int | str = 0,
+) -> list[str]:
+    """拆分超长分段并重新应用最大分段数限制，稳定单条消息长度。"""
+    try:
+        max_segs = int(max_segments) if max_segments is not None else 0
+    except (ValueError, TypeError):
+        max_segs = 0
+    try:
+        max_chars = (
+            int(max_chars_per_segment)
+            if max_chars_per_segment is not None
+            else 0
+        )
+    except (ValueError, TypeError):
+        max_chars = 0
+
+    if max_chars <= 0:
+        return normalize_segments(segments, max_segs)
+
+    stabilized = []
+    for segment in segments:
+        if len(segment) > max_chars:
+            stabilized.extend(_split_overlong_segment(segment, max_chars))
+        else:
+            stabilized.append(segment)
+    return normalize_segments(stabilized, max_segs)
+
+
 def hash_normalized_text(text: str) -> str:
     """对归一化后的文本做稳定哈希。"""
     normalized = normalize_response_text_for_key(text)
@@ -412,29 +541,35 @@ def hash_normalized_text(text: str) -> str:
 def build_segmentation_prompt(text: str, style: str, max_segments: int) -> str:
     """构建智能分段提示词。"""
     style_guide = STYLE_GUIDES.get(style, STYLE_GUIDES["natural"])
-    return f"""你是一个聊天消息切分助手。请把输入的完整文本切分成适合微信分条发送的消息。
+    return f"""你是聊天消息分条助手。只负责把输入拆成适合微信/QQ 分条发送的消息，不总结、不润色、不删字。
+
+【输出格式】
+把每条消息用 " | " 分隔，输出为一行，不能换行。
+每条消息内部保留原文全部标点和文字，只允许删除每条消息末尾的句号。
+
+【拆分规则】
+1. 圆括号动作（如（开心）、（轻声说））尽量单独一条；动作前面或后面的话另起一条。
+2. 普通对话按语义分条，单条不要太长也不要太碎。
+3. 绝对不要把连续标点或颜文字从所在句子切开，它们必须留在原句里。
+4. 如果原文只有一句话，直接原样输出一段。
+5. 最多拆成 {max_segments} 条；超过时把尾部内容合并到倒数第二条或最后一条。
+
 【聊天风格】
 {style_guide}
-【切分方法】
-请将输入文本中的所有换行（回车）全部替换为分割符号 " | "（即空格、竖线、空格），输出为单行文本。
-【强制规则】
-绝对不能改写、遗漏或补充原文中的任何文字和括号，必须保留原文的所有字词。
-绝对不能换行！输出中绝对不允许包含 \n 或任何实际换行，必须整合成一整行纯文本。
-去掉每条消息末尾的句号。
-[核心保护] 绝对禁止将连续的标点符号（如“？！”、“...”、“。~”）或颜文字（如“><”、“T_T”、“qwq”、“(><)”）从主句中切开！它们必须与前文保持在同一条消息中。
-【示例 1：短日常对话】
+
+【示例】
 输入：
-（开心）今天发工资了。
-要不要一起去吃大餐？
+（开心）今天发工资了，要不要一起去吃大餐？
 输出：
-（开心） | 今天发工资了 | 要不要一起去吃大餐
-【示例 2：包含颜文字与连续标点】
+（开心） | 今天发工资了，要不要一起去吃大餐？
+
 输入：
 欸？！><
 今天天气真好...qwq
 输出：
 欸？！>< | 今天天气真好...qwq
-请对以下文本进行分段处理：
+
+输入：
 {text}"""
 
 
@@ -444,6 +579,7 @@ def parse_segments_from_model_output(
     *,
     fallback_text: str,
     max_segments: int | str,
+    max_chars_per_segment: int | str = 0,
 ) -> list[str]:
     """解析模型分段输出。强类型防御机制包装。"""
     try:
@@ -453,8 +589,6 @@ def parse_segments_from_model_output(
         
     try:
         cleaned = strip_thinking_content(raw_text).strip()
-        cleaned = cleaned.replace("(", "（").replace(")", "）")
-        cleaned = cleaned.replace("[", "【").replace("]", "】")
         
         if "|" in cleaned:
             raw_segs = re.split(r"\s*\|\s*", cleaned)
@@ -486,6 +620,17 @@ def parse_segments_from_model_output(
         hallucination_keywords = ["今天发工资了", "要不要一起去吃大餐", "今天天气真好", "公园散步", "突然下雨了", "真是不走运"]
         if any(kw in joined_result and kw not in fallback_text for kw in hallucination_keywords):
             raise ValueError("Detected few-shot hallucination")
+
+        reconstructed = reconstruct_segments_from_model_output(
+            normalized,
+            fallback_text,
+            max_segments=max_segs,
+        )
+        if reconstructed is None:
+            return local_fallback_split(fallback_text, max_segs)
+        if len(reconstructed) == 1 and len(normalized) > 1:
+            return local_fallback_split(fallback_text, max_segs)
+        normalized = reconstructed
             
     except Exception:
         fallback = strip_thinking_content(fallback_text).strip()
@@ -504,7 +649,14 @@ def parse_segments_from_model_output(
             final_merged[-1] += seg
         else:
             final_merged.append(seg)
-            
+
+    if max_chars_per_segment:
+        final_merged = stabilize_segment_lengths(
+            final_merged,
+            max_segments=max_segs,
+            max_chars_per_segment=max_chars_per_segment,
+        )
+
     return safe_escape_segments(final_merged)
 
 
@@ -583,10 +735,28 @@ def local_fallback_split(raw_text: str, max_segs: int) -> list[str]:
                     
     if buffer:
         merged_lines.append("\n".join(buffer))
-        
-    sentence_split_lines = []
+
+    # 优先把括号动作从话语中拆出，使本地兜底也偏向“话语”与“（动作）”分条。
+    expanded_lines = []
     for line in merged_lines:
-        if "\n" in line or (line.startswith("{") and line.endswith("}")) or (line.startswith("[") and line.endswith("]")):
+        if (
+            "\n" in line
+            or (line.startswith("{") and line.endswith("}"))
+            or (line.startswith("[") and line.endswith("]"))
+        ):
+            expanded_lines.append(line)
+        else:
+            expanded_lines.extend(
+                split_segments_at_bracket_boundaries([line], max_segments=0)
+            )
+
+    sentence_split_lines = []
+    for line in expanded_lines:
+        if (
+            "\n" in line
+            or (line.startswith("{") and line.endswith("}"))
+            or (line.startswith("[") and line.endswith("]"))
+        ):
             sentence_split_lines.append(line)
             continue
             
