@@ -1,0 +1,261 @@
+"""Concurrency tests for main.py session serialization."""
+
+import asyncio
+import os
+import sys
+import types
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PLUGIN_PARENT = os.path.dirname(ROOT)
+sys.path.insert(0, ROOT)
+sys.path.insert(0, PLUGIN_PARENT)
+
+
+def _install_fake_astrbot():
+    astrbot = types.ModuleType("astrbot")
+    api = types.ModuleType("astrbot.api")
+    event_mod = types.ModuleType("astrbot.api.event")
+    filter_mod = types.ModuleType("astrbot.api.event.filter")
+    components = types.ModuleType("astrbot.api.message_components")
+    provider = types.ModuleType("astrbot.api.provider")
+    star = types.ModuleType("astrbot.api.star")
+
+    sys.modules["astrbot"] = astrbot
+    sys.modules["astrbot.api"] = api
+    sys.modules["astrbot.api.event"] = event_mod
+    sys.modules["astrbot.api.event.filter"] = filter_mod
+    sys.modules["astrbot.api.message_components"] = components
+    sys.modules["astrbot.api.provider"] = provider
+    sys.modules["astrbot.api.star"] = star
+
+    class AstrBotConfig(dict):
+        pass
+
+    class Logger:
+        def info(self, *args, **kwargs):
+            pass
+
+        def warning(self, *args, **kwargs):
+            pass
+
+        def error(self, *args, **kwargs):
+            pass
+
+        def debug(self, *args, **kwargs):
+            pass
+
+    api.AstrBotConfig = AstrBotConfig
+    api.logger = Logger()
+
+    class AstrMessageEvent:
+        pass
+
+    class MessageChain:
+        def __init__(self, chain):
+            self.chain = chain
+
+    class MessageEventResult:
+        pass
+
+    event_mod.AstrMessageEvent = AstrMessageEvent
+    event_mod.MessageChain = MessageChain
+    event_mod.MessageEventResult = MessageEventResult
+
+    def hook(*args, **kwargs):
+        def deco(fn):
+            return fn
+
+        return deco
+
+    filter_mod.on_llm_response = hook
+    filter_mod.on_decorating_result = hook
+    filter_mod.after_message_sent = hook
+    event_mod.filter = filter_mod
+
+    class Plain:
+        def __init__(self, text):
+            self.text = text
+
+    components.Plain = Plain
+
+    class LLMResponse:
+        pass
+
+    provider.LLMResponse = LLMResponse
+
+    class Context:
+        pass
+
+    class Star:
+        def __init__(self, context):
+            self.context = context
+
+    star.Context = Context
+    star.Star = Star
+
+    return AstrBotConfig, MessageChain, Plain, Context, Star
+
+
+AstrBotConfig, MessageChain, Plain, Context, Star = _install_fake_astrbot()
+
+from astrbot_plugin_smart_segmentation.main import (  # noqa: E402
+    PendingFollowUp,
+    SmartSegmentationPlugin,
+)
+
+
+class FakeContext:
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, session, chain):
+        self.sent.append((session, chain))
+        return True
+
+
+class FakeResult:
+    def __init__(self, text):
+        self.chain = [Plain(text)]
+        self._model_result = True
+
+    def is_model_result(self):
+        return self._model_result
+
+
+class FakeLLMResponse:
+    def __init__(self, text):
+        self.role = "assistant"
+        self.result_chain = MessageChain([Plain(text)])
+        self.completion_text = text
+
+
+class FakeEvent:
+    def __init__(self, session, result):
+        self.unified_msg_origin = session
+        self.result = result
+        self.extra = {}
+
+    def get_result(self):
+        return self.result
+
+    def set_extra(self, key, value):
+        self.extra[key] = value
+
+    def get_extra(self, key, default=""):
+        return self.extra.get(key, default)
+
+
+class TestSessionSerialization(unittest.IsolatedAsyncioTestCase):
+    def _make_plugin(self):
+        plugin = SmartSegmentationPlugin(FakeContext(), {"enabled": True})
+        plugin._store_prepared_segments(
+            "s",
+            "第一句。第二句。",
+            ["第一句。", "第二句。"],
+        )
+        return plugin
+
+    async def test_decorate_waits_for_active_session_lock(self):
+        plugin = self._make_plugin()
+        lock = asyncio.Lock()
+        await lock.acquire()
+        plugin._session_locks["s"] = lock
+
+        event = FakeEvent("s", FakeResult("第一句。第二句。"))
+        task = asyncio.create_task(plugin.on_decorating_result(event))
+        await asyncio.sleep(0.02)
+        self.assertFalse(task.done())
+
+        lock.release()
+        await asyncio.wait_for(task, timeout=1)
+
+        self.assertEqual(event.result.chain[0].text, "第一句。")
+        pending_id = event.extra["smart_segmentation_pending_id"]
+        pending = plugin._pending_follow_ups.get(pending_id)
+        self.assertIsNotNone(pending)
+        self.assertIs(pending.lock, lock)
+
+    async def test_follow_up_task_releases_lock(self):
+        plugin = self._make_plugin()
+        lock = asyncio.Lock()
+        await lock.acquire()
+        pending = PendingFollowUp(
+            session="s",
+            segments=["第二句。"],
+            delay_base=0.0,
+            delay_per_char=0.0,
+            delay_max=0.0,
+            expires_at=999999999.0,
+            lock=lock,
+        )
+
+        await plugin._run_follow_up_segments(pending)
+
+        self.assertFalse(lock.locked())
+        self.assertEqual(len(plugin.context.sent), 1)
+        self.assertIsNone(pending.lock)
+
+    def test_content_signature_exact_match(self):
+        plugin = self._make_plugin()
+        plugin._store_prepared_segments(
+            "s",
+            "今天天气很好。",
+            ["今天天气很好。"],
+        )
+        self.assertEqual(
+            plugin._pop_prepared_segments(
+                "s",
+                "今天天气很好，",
+                min_length=15,
+                max_segments=8,
+            ),
+            ["今天天气很好。"],
+        )
+
+    def test_greedy_assembly_for_tool_loop(self):
+        plugin = SmartSegmentationPlugin(FakeContext(), {"enabled": True})
+        plugin._store_prepared_segments("s", "第一段。", ["第一段。"])
+        plugin._store_prepared_segments("s", "第二段。", ["第二段。"])
+        self.assertEqual(
+            plugin._pop_prepared_segments(
+                "s",
+                "第一段。第二段。",
+                min_length=15,
+                max_segments=8,
+            ),
+            ["第一段。", "第二段。"],
+        )
+
+    async def test_full_pipeline_local_only(self):
+        plugin = SmartSegmentationPlugin(
+            FakeContext(),
+            {
+                "enabled": True,
+                "use_local_only": True,
+                "delay_base": 0.0,
+                "delay_per_char": 0.0,
+                "delay_max": 0.0,
+            },
+        )
+        text = "（开心）今天发工资了。\n要不要一起去吃大餐？"
+        event = FakeEvent("s", FakeResult(text))
+        response = FakeLLMResponse(text)
+
+        await plugin.on_llm_response(event, response)
+        self.assertTrue(plugin._prepared_segments)
+
+        await plugin.on_decorating_result(event)
+        self.assertIn("smart_segmentation_pending_id", event.extra)
+        self.assertNotEqual(event.result.chain[0].text, text)
+
+        await plugin.after_message_sent(event)
+        tasks = list(plugin._active_follow_up_tasks)
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        self.assertGreaterEqual(len(plugin.context.sent), 1)
+        self.assertFalse(plugin._session_locks["s"].locked())
+
+
+if __name__ == "__main__":
+    unittest.main()
