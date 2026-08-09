@@ -5,6 +5,12 @@
     "hint": "关闭后插件不会预分段、替换首段或补发剩余分段。",
     "default": true
   },
+  "use_local_only": {
+    "type": "bool",
+    "description": "仅使用本地高精度切分",
+    "hint": "开启后不调用分段模型，直接使用本地标点/括号规则切分，适合追求稳定输出或不想依赖模型。",
+    "default": false
+  },
   "provider_id": {
     "type": "string",
     "description": "分段模型 Provider ID",
@@ -43,6 +49,17 @@
       "min": 1,
       "max": 20,
       "step": 1
+    }
+  },
+  "max_chars_per_segment": {
+    "type": "int",
+    "description": "单条消息最大字符数",
+    "hint": "超过该长度会在本地按标点二次拆分，降低模型切出超长段的概率。",
+    "default": 180,
+    "slider": {
+      "min": 20,
+      "max": 500,
+      "step": 10
     }
   },
   "temperature": {
