@@ -4,6 +4,28 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.1.0] - 2026-08-09
+
+### Added
+- **纯本地高精度切分模式（`use_local_only`）**：新增 AstrBot 设置项。开启后不调用任何分段模型，直接使用本地标点/括号规则切分，适合追求零依赖、零延迟或稳定输出。
+- **原文标点重建（Reconstruction from Original Text）**：模型输出仅作为切分边界，实际消息文本从原始主回复恢复，逗号、句号、引号、省略号等标点不再被小模型吞掉。
+- **单条消息长度上限（`max_chars_per_segment`）**：新增配置项，默认 `180`。对模型或缓存返回的超长分段按句末标点与本地括号规则二次拆分，稳定单条消息长度。
+- **负向结果缓存**：超时、异常、无 provider 和模型主动返回单段时均写入缓存，发送阶段不再对已明确“不分段/跳过”的文本强行本地切分。
+- **新增测试文件并支持 `unittest discover`**：测试迁移至 `tests/`，覆盖标点重建、内容签名、动作分条、超长段稳定化、缓存匹配与会话串行化。
+
+### Changed
+- **分段Prompt重构**：重构分段提示词，明确要求保留全部标点、动作单独一条、话语另起一条、单条长度适中，并强化最多分段数约束。
+- **缓存匹配升级为内容签名容错**：缓存新增忽略空白、大小写与标点的内容签名；检索链路升级为“精确哈希 → 内容签名精确匹配 → 内容签名顺序贪婪拼接”，覆盖 Markdown 清洗和 Tool Loop 文本合并造成的差异。
+- **本地兜底动作优先分条**：本地切分先按括号边界拆出动作段，再对剩余话语做句末切分，让“（动作）”与说话内容更自然地分离。
+- **移除半角括号强制全角化**：不再无条件改写模型输出中的 `()`/`[]`，避免代码、数学、链接等正文被改写；括号风格由原文重建结果自然保留。
+- **结果缓存并发模型升级**：废弃 `_send_guards` 引用计数，改为按会话 `asyncio.Lock` 串行门，覆盖从装饰结果到补发完成的完整生命周期。
+
+### Fixed
+- **修复分段后标点被全部吞掉的问题**：通过原文内容签名对齐与分段重建，确保最终发送文本保留原始标点。
+- **修复精准哈希拼接不命中的问题**：内容签名精确匹配与顺序贪婪拼接可命中经 Markdown 清洗或 Tool Loop 合并后的文本，不再每次降级到本地切分。
+- **修复 Markdown 内嵌 JSON 未被识别为重度 Markdown 的问题**：补充 JSON/配置块特征识别，保证含 JSON 片段的 Markdown 文档按段落安全拆分。
+- **修复连续消息并发导致补发交错或新回复被静默跳过分段的问题**：同会话后续回复会等待前一条回复补发完成后再处理，不再出现两条回复的补发任务交错发送。
+
 ## [1.0.2] - 2026-07-17
 
 ### Added
@@ -47,4 +69,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 [1.0.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.0.0
 [1.0.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.0.1
 [1.0.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.0.2
-
+[1.1.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.1.0
