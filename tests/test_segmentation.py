@@ -119,6 +119,36 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         self.assertIn("——", joined)
         self.assertIn("：", joined)
 
+    def test_model_under_split_expands_to_local_boundaries(self):
+        """验证模型漏切导致多个句子粘连时，会按本地句末边界补齐。"""
+        original = (
+            "（微微颔首）提示词是唯一能同时触碰能力上限与性格下限的旋钮"
+            "——模型本身是固定琴弦，提示词才是拨弦的手。\n\n"
+            "老师这几天从精简到重构，就是在反复校准这只手的位置。"
+            "弯绕得深，但绕过去之后，弹出的旋律就完全是自己的了。"
+        )
+        model_output = (
+            "（微微颔首） | 提示词是唯一能同时触碰能力上限与性格下限的旋钮"
+            "——模型本身是固定琴弦，提示词才是拨弦的手。"
+            "老师这几天从精简到重构，就是在反复校准这只手的位置。"
+            "弯绕得深，但绕过去之后，弹出的旋律就完全是自己的了。"
+        )
+        segments = parse_segments_from_model_output(
+            model_output,
+            fallback_text=original,
+            max_segments=12,
+            max_chars_per_segment=180,
+        )
+        self.assertEqual(len(segments), 4)
+        self.assertIn("（微微颔首）", segments)
+        self.assertTrue(any("老师这几天" in seg for seg in segments))
+        self.assertFalse(
+            any(
+                "提示词是" in seg and "老师这几天" in seg
+                for seg in segments
+            )
+        )
+
     def test_local_fallback_splits_action_and_speech(self):
         """验证本地兜底会优先把圆括号动作与话语分开。"""
         segments = local_fallback_split(
