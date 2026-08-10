@@ -553,6 +553,7 @@ def build_segmentation_prompt(text: str, style: str, max_segments: int) -> str:
 3. 绝对不要把连续标点或颜文字从所在句子切开，它们必须留在原句里。
 4. 如果原文只有一句话，直接原样输出一段。
 5. 最多拆成 {max_segments} 条；超过时把尾部内容合并到倒数第二条或最后一条。
+6. 同一消息内不要粘连多个完整句子；以。！？结尾的完整句子之间必须用 | 拆开。
 
 【聊天风格】
 {style_guide}
@@ -630,7 +631,10 @@ def parse_segments_from_model_output(
             return local_fallback_split(fallback_text, max_segs)
         if len(reconstructed) == 1 and len(normalized) > 1:
             return local_fallback_split(fallback_text, max_segs)
-        normalized = reconstructed
+        normalized = expand_under_split_natural_segments(
+            reconstructed,
+            max_segments=max_segs,
+        )
             
     except Exception:
         fallback = strip_thinking_content(fallback_text).strip()
@@ -658,6 +662,29 @@ def parse_segments_from_model_output(
         )
 
     return safe_escape_segments(final_merged)
+
+
+def expand_under_split_natural_segments(
+    segments: list[str],
+    *,
+    max_segments: int | str = 0,
+) -> list[str]:
+    """把模型漏切的自然语言长段按本地句末边界补齐，避免多个句子粘连。"""
+    expanded = []
+    for segment in segments:
+        if (
+            not segment
+            or is_non_natural_language(segment)
+            or is_markdown_heavy(segment)
+        ):
+            expanded.append(segment)
+            continue
+        local_segments = local_fallback_split(segment, 0)
+        if len(local_segments) > 1:
+            expanded.extend(local_segments)
+        else:
+            expanded.append(segment)
+    return normalize_segments(expanded, max_segments)
 
 
 def calculate_send_delay(
