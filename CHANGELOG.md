@@ -4,6 +4,17 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.1.1] - 2026-08-10
+
+### Added
+- **模型漏切补齐回归测试**：覆盖分段模型把多个完整句子放进同一个 `|` 段时的恢复场景。
+
+### Changed
+- **分段Prompt强化**：明确同一条消息内不得粘连多个完整句子，以句号/感叹号/问号结尾的句子之间必须拆条。
+
+### Fixed
+- **修复完整句子在单条消息内粘连的问题**：模型漏切后，会对自然语言段再次应用本地句末边界补齐，原本应拆成多条消息的完整句子不再挤在同一条消息里。
+
 ## [1.1.0] - 2026-08-09
 
 ### Added
