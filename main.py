@@ -21,10 +21,13 @@ from .segmentation import (
     is_action_only_text,
     parse_segments_from_model_output,
     strip_thinking_content,
+    clean_markdown_by_mode,
     normalize_response_text_for_key,
     normalize_content_key,
     # 导入非自然语言检测与本地逻辑切分工具
     is_non_natural_language,
+    is_markdown_document,
+    has_protected_block,
     local_fallback_split,
     stabilize_segment_lengths,
 )
@@ -49,6 +52,7 @@ class SegmentationSettings:
     delay_per_char: float = 0.015
     delay_max: float = 1.2
     max_chars_per_segment: int = 180
+    markdown_clean_mode: str = "light"
 
 
 @dataclass(slots=True)
@@ -93,18 +97,28 @@ class SmartSegmentationPlugin(Star):
         if settings is None:
             return
 
-        text = self._extract_response_plain_text(response)
+        text = clean_markdown_by_mode(
+            self._extract_response_plain_text(response),
+            settings.markdown_clean_mode,
+        )
         if not self._should_segment_text(text, settings):
             return
 
         # 仅在本地高精切分模式下，完全不调用分段模型。
-        if settings.use_local_only:
-            logger.info("智能分段已启用仅本地高精切分模式，跳过分段模型调用")
-            segments = local_fallback_split(text, settings.max_segments)
-        # 在 LLM 处理前拦截非自然语言（如 JSON、代码块），防止小参数模型产生 Few-Shot 样例幻觉
-        elif is_non_natural_language(text):
-            logger.info("检测到非自然语言（JSON/代码等），跳过 LLM 调用，直接启用本地高精切分兜底")
-            segments = local_fallback_split(text, settings.max_segments)
+        if (
+            settings.use_local_only
+            or is_non_natural_language(text)
+            or is_markdown_document(text)
+            or has_protected_block(text)
+        ):
+            logger.info(
+                "智能分段已启用本地/受保护块直发模式，跳过分段模型调用"
+            )
+            segments = local_fallback_split(
+                text,
+                settings.max_segments,
+                settings.max_chars_per_segment,
+            )
         else:
             provider_id = await self._resolve_provider_id(event, settings)
             if not provider_id:
@@ -150,9 +164,17 @@ class SmartSegmentationPlugin(Star):
         if result is None or not self._is_model_text_result(result):
             return
 
-        outbound_text = self._extract_plain_text_chain(result)
+        raw_outbound = self._extract_plain_text_chain(result)
+        if not raw_outbound:
+            return
+        outbound_text = clean_markdown_by_mode(
+            raw_outbound,
+            settings.markdown_clean_mode,
+        )
         if not outbound_text:
             return
+        if outbound_text != raw_outbound:
+            result.chain = [Plain(outbound_text)]
 
         session = event.unified_msg_origin
         lock = self._session_locks.get(session)
@@ -167,7 +189,8 @@ class SmartSegmentationPlugin(Star):
                 event.unified_msg_origin, 
                 outbound_text,
                 min_length=settings.min_length,
-                max_segments=settings.max_segments
+                max_segments=settings.max_segments,
+                max_chars_per_segment=settings.max_chars_per_segment,
             )
             if not segments or len(segments) <= 1:
                 return
@@ -274,6 +297,10 @@ class SmartSegmentationPlugin(Star):
                     180,
                 ),
             ),
+            markdown_clean_mode=self._as_markdown_clean_mode(
+                self._get_config_value("markdown_clean_mode", "light"),
+                "light",
+            ),
             temperature=self._as_float(
                 self._get_config_value("temperature", 0.3),
                 0.3,
@@ -334,6 +361,14 @@ class SmartSegmentationPlugin(Star):
             return float(value)
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _as_markdown_clean_mode(value: Any, default: str) -> str:
+        """将配置值安全转换为 markdown_clean_mode。"""
+        normalized = str(value or default).strip().lower()
+        if normalized not in {"off", "light", "heavy"}:
+            return default
+        return normalized
 
     @staticmethod
     def _extract_response_plain_text(response: LLMResponse) -> str:
@@ -476,6 +511,7 @@ class SmartSegmentationPlugin(Star):
         *,
         min_length: int = 15,
         max_segments: int = 0,
+        max_chars_per_segment: int = 0,
     ) -> list[str] | None:
         """从预存库中获取分段结果（精确匹配 -> 顺序贪婪组合自愈 -> 本地高精分段兜底）。"""
         self._prune_expired_prepared_segments()
@@ -534,7 +570,11 @@ class SmartSegmentationPlugin(Star):
         # 3. 终极自愈兜底：本地纯逻辑高精切分
         if len(outbound_text) >= min_length and not is_action_only_text(outbound_text):
             # 直接复用 segmentation.py 中封装的高精度切分函数
-            local_segs = local_fallback_split(outbound_text, max_segments)
+            local_segs = local_fallback_split(
+                outbound_text,
+                max_segments,
+                max_chars_per_segment,
+            )
             if local_segs and len(local_segs) > 1:
                 logger.info("智能分段精准哈希/拼合未中，已自动降级启动本地高精切分兜底")
                 return local_segs

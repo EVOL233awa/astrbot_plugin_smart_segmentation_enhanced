@@ -4,9 +4,13 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import logging
+import math
 import random
 import re
 from typing import Any
+
+_LOG = logging.getLogger(__name__)
 
 # 正则表达式定义
 THINKING_TAG_RE = re.compile(
@@ -107,8 +111,8 @@ def is_non_natural_language(text: str) -> bool:
         except Exception:
             pass
             
-    # 3. 纯代码块特征保护
-    if "```" in stripped:
+    # 3. 纯代码块特征保护：只有整段以围栏开头的文本才整体放行。
+    if stripped.startswith("```"):
         return True
         
     # 4. 强特征配置字段
@@ -135,7 +139,12 @@ def safe_escape_segments(segments: list[str]) -> list[str]:
         stripped = seg.strip()
         
         # 1. 如果是非自然语言段（代码块、纯 JSON、配置字段等），严格保持原文原样
-        if is_non_natural_language(seg) or "```" in stripped:
+        if (
+            is_non_natural_language(seg)
+            or "```" in stripped
+            or is_markdown_document(seg)
+            or has_protected_block(seg)
+        ):
             processed_segments.append(seg)
             continue
             
@@ -183,6 +192,664 @@ def is_markdown_heavy(text: str) -> bool:
         return True
         
     return False
+
+
+# Markdown block detection and protection
+_MD_HEADING_RE = re.compile(r"^#{1,6}\s")
+_MD_HR_RE = re.compile(r"^[-*_]{3,}\s*$")
+_MD_TABLE_LINE_RE = re.compile(r"^\|.*\|\s*$")
+_MD_LIST_LINE_RE = re.compile(r"^([-*+]|\d+\.)\s")
+
+
+def _is_json_like_block(text: str) -> bool:
+    """Return True only when a balanced bracket block is valid JSON."""
+    stripped = text.strip()
+    if not (
+        (stripped.startswith("{") and stripped.endswith("}"))
+        or (stripped.startswith("[") and stripped.endswith("]"))
+    ):
+        return False
+    try:
+        json.loads(stripped)
+        return True
+    except Exception:
+        return False
+
+
+def _consume_json_block(lines: list[str], start: int) -> tuple[list[str] | None, int]:
+    """Consume the first balanced JSON block, skipping quoted content."""
+    depth = 0
+    in_string = False
+    escaped = False
+    block: list[str] = []
+    for index in range(start, len(lines)):
+        line = lines[index]
+        block.append(line)
+        for char in line:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+            else:
+                if char == '"':
+                    in_string = True
+                elif char in "{[":
+                    depth += 1
+                elif char in "}]":
+                    depth -= 1
+        if depth == 0:
+            block_text = "\n".join(block)
+            if _is_json_like_block(block_text):
+                return block, index + 1
+            return None, start
+    return None, start
+
+
+def _is_closing_fence(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("```") and stripped.strip("`").strip() == ""
+
+
+def _consume_code_fence(lines: list[str], start: int) -> tuple[list[str], int]:
+    block = [lines[start]]
+    index = start + 1
+    while index < len(lines) and not _is_closing_fence(lines[index]):
+        block.append(lines[index])
+        index += 1
+    if index < len(lines):
+        block.append(lines[index])
+        index += 1
+    return block, index
+
+
+def _consume_table(lines: list[str], start: int) -> tuple[list[str], int]:
+    block = [lines[start]]
+    index = start + 1
+    while index < len(lines) and _MD_TABLE_LINE_RE.match(lines[index].strip()):
+        block.append(lines[index])
+        index += 1
+    return block, index
+
+
+def _consume_list(lines: list[str], start: int) -> tuple[list[str], int]:
+    block = [lines[start]]
+    index = start + 1
+    while index < len(lines) and _MD_LIST_LINE_RE.match(lines[index].strip()):
+        block.append(lines[index])
+        index += 1
+    return block, index
+
+
+def _consume_quote(lines: list[str], start: int) -> tuple[list[str], int]:
+    block = [lines[start]]
+    index = start + 1
+    while index < len(lines) and lines[index].strip().startswith(">"):
+        block.append(lines[index])
+        index += 1
+    return block, index
+
+
+def _is_markdown_block_start(line: str) -> bool:
+    stripped = line.strip()
+    return (
+        stripped.startswith("```")
+        or _MD_TABLE_LINE_RE.match(stripped) is not None
+        or _MD_LIST_LINE_RE.match(stripped) is not None
+        or stripped.startswith(">")
+    )
+
+
+def _is_markdown_or_json_block_start(line: str) -> bool:
+    stripped = line.strip()
+    return (
+        _is_markdown_block_start(line)
+        or stripped.startswith("{")
+        or stripped.startswith("[")
+    )
+
+
+def _is_markdown_structural_line(line: str) -> bool:
+    stripped = line.strip()
+    return (
+        _MD_HEADING_RE.match(stripped) is not None
+        or _MD_HR_RE.match(stripped) is not None
+        or _is_markdown_block_start(line)
+    )
+
+
+def _has_structure_after(lines: list[str], index: int) -> bool:
+    """Return True when a later non-blank line is still Markdown structure."""
+    scan = index + 1
+    while scan < len(lines):
+        if lines[scan].strip():
+            return _is_markdown_structural_line(lines[scan])
+        scan += 1
+    return False
+
+
+def _markdown_region_ranges(lines: list[str]) -> list[tuple[int, int]]:
+    """Find contiguous Markdown regions from first to last structural line."""
+    ranges: list[tuple[int, int]] = []
+    index = 0
+    while index < len(lines):
+        if not _is_markdown_structural_line(lines[index]):
+            index += 1
+            continue
+
+        start = index
+        scan = index
+        first_is_heading = (
+            _MD_HEADING_RE.match(lines[start].strip()) is not None
+        )
+        last_end = _consume_markdown_block(lines, scan)
+        scan = last_end
+        first_non_blank_after_start = True
+        while True:
+            while scan < len(lines) and not lines[scan].strip():
+                scan += 1
+            if scan >= len(lines):
+                break
+            if _is_markdown_structural_line(lines[scan]):
+                first_non_blank_after_start = False
+                last_end = _consume_markdown_block(lines, scan)
+                scan = last_end
+                continue
+            if _has_structure_after(lines, scan):
+                first_non_blank_after_start = False
+                scan += 1
+                continue
+            if first_is_heading and first_non_blank_after_start:
+                scan += 1
+                last_end = scan
+                first_non_blank_after_start = False
+                continue
+            break
+
+        ranges.append((start, last_end))
+        index = last_end
+    return ranges
+
+
+def _consume_markdown_block(lines: list[str], start: int) -> int:
+    """Consume one complete Markdown block and return the next line index."""
+    stripped = lines[start].strip()
+    if stripped.startswith("```"):
+        _, end = _consume_code_fence(lines, start)
+        return end
+    if _MD_TABLE_LINE_RE.match(stripped):
+        _, end = _consume_table(lines, start)
+        return end
+    if _MD_LIST_LINE_RE.match(stripped):
+        _, end = _consume_list(lines, start)
+        return end
+    if stripped.startswith(">"):
+        _, end = _consume_quote(lines, start)
+        return end
+    return start + 1
+
+
+def _split_non_markdown_lines(lines: list[str]) -> list[tuple[str, str]]:
+    """Split non-Markdown gaps while preserving JSON blocks."""
+    chunks: list[tuple[str, str]] = []
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            block, next_index = _consume_json_block(lines, index)
+            if block is not None:
+                chunks.append(("json", "\n".join(block)))
+                index = next_index
+                continue
+            chunks.append(("text", lines[index]))
+            index += 1
+            continue
+
+        start = index
+        while index < len(lines):
+            current = lines[index].strip()
+            if current.startswith("{") or current.startswith("["):
+                break
+            index += 1
+        chunk = "\n".join(lines[start:index])
+        if chunk.strip():
+            chunks.append(("text", chunk))
+    return chunks
+
+
+def split_protected_blocks(text: str) -> list[tuple[str, str]]:
+    """Split text into protected JSON/Markdown blocks and ordinary text chunks."""
+    lines = text.splitlines()
+    chunks: list[tuple[str, str]] = []
+    regions = _markdown_region_ranges(lines)
+    cursor = 0
+    for start, end in regions:
+        if start > cursor:
+            chunks.extend(_split_non_markdown_lines(lines[cursor:start]))
+        chunks.append(("markdown", "\n".join(lines[start:end])))
+        cursor = end
+    if cursor < len(lines):
+        chunks.extend(_split_non_markdown_lines(lines[cursor:]))
+    return chunks
+
+
+def is_markdown_document(text: str) -> bool:
+    """Return True only when every non-empty line belongs to a Markdown structure."""
+    chunks = split_protected_blocks(text)
+    has_structure = False
+    for kind, chunk in chunks:
+        if kind != "text":
+            has_structure = True
+            continue
+        for line in chunk.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if _MD_HEADING_RE.match(stripped) or _MD_HR_RE.match(stripped):
+                has_structure = True
+                continue
+            return False
+    return has_structure
+
+
+def has_protected_block(text: str) -> bool:
+    """Return True when text contains JSON or a block-level Markdown structure."""
+    return any(kind != "text" for kind, _ in split_protected_blocks(text))
+
+
+def compute_target_segment_length(
+    text: str,
+    max_segments: int | str = 0,
+    max_chars_per_segment: int | str = 0,
+) -> int:
+    """Compute the code-layer target length for ordinary chat segments."""
+    try:
+        max_segs = int(max_segments) if max_segments is not None else 0
+    except (ValueError, TypeError):
+        max_segs = 0
+    try:
+        max_chars = (
+            int(max_chars_per_segment)
+            if max_chars_per_segment is not None
+            else 0
+        )
+    except (ValueError, TypeError):
+        max_chars = 0
+
+    total = len(str(text or ""))
+    target = max(90 + round(total * 0.06), 100)
+    if max_segs > 0:
+        target = max(target, math.ceil(total / max_segs))
+    if max_chars > 0:
+        target = min(target, max_chars)
+    return max(1, target)
+
+
+def _join_adjacent(left: str, right: str, limit: int = 0) -> str:
+    """Join two segments without physically gluing words together."""
+    if not left:
+        return right
+    if not right:
+        return left
+    if left[-1].isspace() or right[0].isspace():
+        return left + right
+    spaced = left + " " + right
+    if limit <= 0 or len(spaced) <= limit:
+        return spaced
+    return left + right
+
+
+def _merge_to_max_segments(
+    segments: list[str],
+    max_segments: int,
+    max_chars: int,
+) -> list[str]:
+    """Merge adjacent smallest groups until the hard segment count is satisfied."""
+    result = list(segments)
+    while len(result) > max_segments:
+        best_index: int | None = None
+        best_length: int | None = None
+        for index in range(len(result) - 1):
+            if is_action_only_text(result[index]) or is_action_only_text(
+                result[index + 1]
+            ):
+                continue
+            merged = _join_adjacent(
+                result[index],
+                result[index + 1],
+                max_chars if max_chars > 0 else 0,
+            )
+            if max_chars > 0 and len(merged) > max_chars:
+                continue
+            if best_length is None or len(merged) < best_length:
+                best_index = index
+                best_length = len(merged)
+        if best_index is None:
+            break
+        result[best_index] = _join_adjacent(
+            result[best_index],
+            result[best_index + 1],
+            max_chars if max_chars > 0 else 0,
+        )
+        del result[best_index + 1]
+    return result
+
+
+def pack_segments_to_target(
+    segments: list[str],
+    target: int,
+    max_segments: int | str = 0,
+    max_chars_per_segment: int | str = 0,
+) -> list[str]:
+    """Pack atomic segments by target length without dumping a long tail."""
+    try:
+        max_segs = int(max_segments) if max_segments is not None else 0
+    except (ValueError, TypeError):
+        max_segs = 0
+    try:
+        max_chars = (
+            int(max_chars_per_segment)
+            if max_chars_per_segment is not None
+            else 0
+        )
+    except (ValueError, TypeError):
+        max_chars = 0
+
+    cleaned = [seg.strip() for seg in segments if seg and seg.strip()]
+    if not cleaned:
+        return []
+
+    packed: list[str] = []
+    current = ""
+    for segment in cleaned:
+        if is_action_only_text(segment):
+            if current:
+                packed.append(current)
+                current = ""
+            packed.append(segment)
+            continue
+        if not current:
+            current = segment
+            continue
+        candidate = _join_adjacent(current, segment, target)
+        if len(candidate) <= target:
+            current = candidate
+        else:
+            packed.append(current)
+            current = segment
+    if current:
+        packed.append(current)
+
+    if max_segs > 0:
+        packed = _merge_to_max_segments(packed, max_segs, max_chars or target)
+        if len(packed) > max_segs:
+            _LOG.warning(
+                "文本长度超过 max_segments * max_chars_per_segment，"
+                "无法同时满足硬段数与硬单条长度；已优先避免超长尾段"
+            )
+    return packed
+
+
+def _sentence_split_line(line: str) -> list[str]:
+    """Split one ordinary text line at sentence-ending punctuation clusters."""
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    index = 0
+    length = len(line)
+    while index < length:
+        char = line[index]
+        if char in "（(【[":
+            depth += 1
+            current.append(char)
+            index += 1
+            continue
+        if char in "）)】]":
+            depth = max(0, depth - 1)
+            current.append(char)
+            index += 1
+            continue
+        if depth > 0:
+            current.append(char)
+            index += 1
+            continue
+
+        if char == ".":
+            dots = ""
+            while index < length and line[index] == ".":
+                dots += "."
+                index += 1
+            current.append(dots)
+            if index >= length or line[index].isspace():
+                parts.append("".join(current).strip())
+                current = []
+            continue
+
+        if char == "…":
+            dots = ""
+            while index < length and line[index] == "…":
+                dots += "…"
+                index += 1
+            current.append(dots)
+            if index >= length or line[index].isspace():
+                parts.append("".join(current).strip())
+                current = []
+            continue
+
+        if char in "。！？!?~":
+            current.append(char)
+            index += 1
+            while index < length and line[index] in "。！？!?~.……,，":
+                current.append(line[index])
+                index += 1
+            parts.append("".join(current).strip())
+            current = []
+            continue
+
+        current.append(char)
+        index += 1
+
+    if current and "".join(current).strip():
+        parts.append("".join(current).strip())
+    return parts
+
+
+def _split_plain_text(text: str) -> list[str]:
+    """Split ordinary text into atomic action/sentence parts."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    expanded: list[str] = []
+    for line in lines:
+        expanded.extend(
+            split_segments_at_bracket_boundaries([line], max_segments=0)
+        )
+
+    sentence_parts: list[str] = []
+    for line in expanded:
+        sentence_parts.extend(_sentence_split_line(line))
+
+    merged: list[str] = []
+    for part in sentence_parts:
+        if merged and is_kaomoji_or_pure_punct(part):
+            merged[-1] += part
+        else:
+            merged.append(part)
+    return [part for part in merged if part.strip()]
+
+
+def _clean_inline_markdown(text: str) -> str:
+    """Strip inline Markdown markers while keeping the visible content."""
+    cleaned = text
+    cleaned = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\1 (\2)", cleaned)
+    cleaned = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", cleaned)
+    cleaned = re.sub(r"\*\*(.+?)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"\1", cleaned)
+    cleaned = re.sub(r"~~(.+?)~~", r"\1", cleaned)
+    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+    return cleaned
+
+
+def clean_light_markdown(text: str) -> str:
+    """Clean only light inline Markdown and preserve protected structures."""
+    if not text:
+        return text
+    if is_non_natural_language(text) or is_markdown_document(text):
+        return text
+    if has_protected_block(text):
+        return text
+    return _clean_inline_markdown(text)
+
+
+_MDIT_INSTANCE = None
+_MDIT_AVAILABLE = False
+try:
+    from markdown_it import MarkdownIt
+    from mdit_plain.renderer import RendererPlain
+
+    _MDIT_INSTANCE = MarkdownIt(renderer_cls=RendererPlain)
+    _MDIT_AVAILABLE = True
+except Exception:
+    _MDIT_INSTANCE = None
+    _MDIT_AVAILABLE = False
+
+_HEAVY_FALLBACK_WARNED = False
+
+
+def _warn_heavy_fallback_once() -> None:
+    global _HEAVY_FALLBACK_WARNED
+    if _HEAVY_FALLBACK_WARNED:
+        return
+    _HEAVY_FALLBACK_WARNED = True
+    _LOG.warning(
+        "mdit_plain/markdown-it-py 不可用，heavy Markdown 清洗降级为内容保全式正则"
+    )
+
+
+def _strip_code_fence_markers(chunk: str) -> str:
+    return "\n".join(
+        line
+        for line in chunk.splitlines()
+        if not line.strip().startswith("```")
+    )
+
+
+def _strip_table_markers(chunk: str) -> str:
+    rows: list[str] = []
+    for line in chunk.splitlines():
+        stripped = line.strip()
+        if re.match(r"^\|[\s:\-|]+\|\s*$", stripped):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        rows.append(" | ".join(cells))
+    return "\n".join(rows)
+
+
+def _strip_list_markers(chunk: str) -> str:
+    cleaned_lines: list[str] = []
+    for line in chunk.splitlines():
+        cleaned = re.sub(
+            r"^(\s*(?:[-*+]|\d+\.)\s+)\[[ xX]\]\s*",
+            r"\1",
+            line,
+        )
+        cleaned = re.sub(r"^[-*+]\s+", "", cleaned)
+        cleaned = re.sub(r"^\d+\.\s+", "", cleaned)
+        cleaned_lines.append(cleaned)
+    return "\n".join(cleaned_lines)
+
+
+def _strip_quote_markers(chunk: str) -> str:
+    return "\n".join(re.sub(r"^>\s?", "", line) for line in chunk.splitlines())
+
+
+def _clean_heavy_text_regex(text: str) -> str:
+    cleaned_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if _MD_HR_RE.match(stripped):
+            continue
+        cleaned = re.sub(r"^#{1,6}\s+", "", line)
+        cleaned = re.sub(r"^>\s?", "", cleaned)
+        cleaned = re.sub(r"^[-*+]\s+", "", cleaned)
+        cleaned = re.sub(r"^\d+\.\s+", "", cleaned)
+        cleaned = _clean_inline_markdown(cleaned)
+        cleaned_lines.append(cleaned)
+    return "\n".join(cleaned_lines).strip()
+
+
+def _clean_markdown_region_heavy(text: str) -> str:
+    """Clean a merged Markdown region while preserving code/table/list content."""
+    cleaned_lines: list[str] = []
+    in_code = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            cleaned_lines.append(line)
+            continue
+        if _MD_HR_RE.match(stripped):
+            continue
+        if _MD_TABLE_LINE_RE.match(stripped):
+            cleaned_lines.append(_strip_table_markers(line))
+            continue
+        if _MD_LIST_LINE_RE.match(stripped):
+            cleaned_lines.append(_strip_list_markers(line))
+            continue
+        cleaned = re.sub(r"^#{1,6}\s+", "", line)
+        cleaned = re.sub(r"^>\s?", "", cleaned)
+        cleaned = re.sub(r"^[-*+]\s+", "", cleaned)
+        cleaned = re.sub(r"^\d+\.\s+", "", cleaned)
+        cleaned_lines.append(_clean_inline_markdown(cleaned))
+    return "\n".join(cleaned_lines).strip()
+
+
+def clean_heavy_markdown(text: str) -> str:
+    """Clean all Markdown while preserving JSON and code/table/list content."""
+    if not text:
+        return text
+    chunks = split_protected_blocks(text)
+    if not chunks:
+        return text
+
+    cleaned_parts: list[str] = []
+    for kind, chunk in chunks:
+        if kind == "json":
+            cleaned_parts.append(chunk)
+        elif kind == "code":
+            cleaned_parts.append(_strip_code_fence_markers(chunk))
+        elif kind == "table":
+            cleaned_parts.append(_strip_table_markers(chunk))
+        elif kind == "list":
+            cleaned_parts.append(_strip_list_markers(chunk))
+        elif kind == "quote":
+            cleaned_parts.append(_strip_quote_markers(chunk))
+        elif kind == "markdown":
+            cleaned_parts.append(_clean_markdown_region_heavy(chunk))
+        else:
+            if _MDIT_AVAILABLE:
+                try:
+                    assert _MDIT_INSTANCE is not None
+                    cleaned_parts.append(_MDIT_INSTANCE.render(chunk))
+                except Exception:
+                    _warn_heavy_fallback_once()
+                    cleaned_parts.append(_clean_heavy_text_regex(chunk))
+            else:
+                _warn_heavy_fallback_once()
+                cleaned_parts.append(_clean_heavy_text_regex(chunk))
+    return "\n".join(part for part in cleaned_parts if part is not None).strip()
+
+
+def clean_markdown_by_mode(text: str, mode: str) -> str:
+    """Apply the configured Markdown cleaning mode."""
+    normalized_mode = str(mode or "light").strip().lower()
+    if normalized_mode == "heavy":
+        return clean_heavy_markdown(text)
+    if normalized_mode == "light":
+        return clean_light_markdown(text)
+    return text
 
 
 def extract_json_array_text(raw_text: str) -> str:
@@ -473,14 +1140,16 @@ def reconstruct_segments_from_model_output(
     return segments
 
 
-def _split_overlong_segment(segment: str, max_chars: int) -> list[str]:
-    """将单条超长消息按标点或空白二次拆分，保留原始标点。"""
-    sub_segments = local_fallback_split(segment, 0)
-    if len(sub_segments) > 1:
-        return sub_segments
-    if len(segment) <= max_chars:
-        return [segment]
+def _is_unsplittable_segment(segment: str) -> bool:
+    """Return True for protected JSON/Markdown segments that must not be cut."""
+    stripped = str(segment or "").strip()
+    if not stripped:
+        return True
+    return is_non_natural_language(stripped) or is_markdown_document(stripped)
 
+
+def _hard_split_overlong(segment: str, max_chars: int) -> list[str]:
+    """Split a long ordinary segment at punctuation or whitespace."""
     parts = []
     remaining = segment
     while len(remaining) > max_chars:
@@ -495,6 +1164,24 @@ def _split_overlong_segment(segment: str, max_chars: int) -> list[str]:
     if remaining:
         parts.append(remaining)
     return parts
+
+
+def _split_overlong_segment(segment: str, max_chars: int) -> list[str]:
+    """将单条超长消息按标点或空白二次拆分，保留原始标点。"""
+    sub_segments = local_fallback_split(segment, 0)
+    if len(sub_segments) <= 1:
+        return _hard_split_overlong(segment, max_chars)
+
+    result: list[str] = []
+    for sub_segment in sub_segments:
+        if (
+            len(sub_segment) > max_chars
+            and not _is_unsplittable_segment(sub_segment)
+        ):
+            result.extend(_hard_split_overlong(sub_segment, max_chars))
+        else:
+            result.append(sub_segment)
+    return result
 
 
 def stabilize_segment_lengths(
@@ -517,16 +1204,50 @@ def stabilize_segment_lengths(
     except (ValueError, TypeError):
         max_chars = 0
 
-    if max_chars <= 0:
-        return normalize_segments(segments, max_segs)
+    normalized = normalize_segments(segments, max_segments=0)
+    if not normalized:
+        return []
 
-    stabilized = []
-    for segment in segments:
-        if len(segment) > max_chars:
-            stabilized.extend(_split_overlong_segment(segment, max_chars))
+    runs: list[tuple[str, list[str]]] = []
+    text_parts: list[str] = []
+    for segment in normalized:
+        if _is_unsplittable_segment(segment) or has_protected_block(segment):
+            if text_parts:
+                runs.append(("text", text_parts))
+                text_parts = []
+            runs.append(("protected", [segment]))
         else:
-            stabilized.append(segment)
-    return normalize_segments(stabilized, max_segs)
+            text_parts.append(segment)
+    if text_parts:
+        runs.append(("text", text_parts))
+
+    target = compute_target_segment_length(
+        "".join(normalized),
+        max_segs,
+        max_chars,
+    )
+    stabilized: list[str] = []
+    for run_kind, parts in runs:
+        if run_kind == "protected":
+            stabilized.extend(parts)
+            continue
+        if max_chars > 0:
+            split_parts: list[str] = []
+            for segment in parts:
+                if len(segment) > max_chars:
+                    split_parts.extend(_split_overlong_segment(segment, max_chars))
+                else:
+                    split_parts.append(segment)
+            parts = split_parts
+        stabilized.extend(
+            pack_segments_to_target(
+                parts,
+                target,
+                max_segments=max_segs,
+                max_chars_per_segment=max_chars,
+            )
+        )
+    return stabilized
 
 
 def hash_normalized_text(text: str) -> str:
@@ -544,7 +1265,7 @@ def build_segmentation_prompt(text: str, style: str, max_segments: int) -> str:
     return f"""你是聊天消息分条助手。只负责把输入拆成适合微信/QQ 分条发送的消息，不总结、不润色、不删字。
 
 【输出格式】
-把每条消息用 " | " 分隔，输出为一行，不能换行。
+每条消息之间用 " | " 分隔；消息内部保留原文换行，但不能使用额外的 " | " 分隔符。
 每条消息内部保留原文全部标点和文字，只允许删除每条消息末尾的句号。
 
 【拆分规则】
@@ -552,7 +1273,7 @@ def build_segmentation_prompt(text: str, style: str, max_segments: int) -> str:
 2. 普通对话按语义分条，单条不要太长也不要太碎。
 3. 绝对不要把连续标点或颜文字从所在句子切开，它们必须留在原句里。
 4. 如果原文只有一句话，直接原样输出一段。
-5. 最多拆成 {max_segments} 条；超过时把尾部内容合并到倒数第二条或最后一条。
+5. 最多拆成 {max_segments} 条；不要为了凑条数切碎，也不要把大量内容堆到最后一条。
 6. 同一消息内不要粘连多个完整句子；以。！？结尾的完整句子之间必须用 | 拆开。
 
 【聊天风格】
@@ -593,19 +1314,14 @@ def parse_segments_from_model_output(
         
         if "|" in cleaned:
             raw_segs = re.split(r"\s*\|\s*", cleaned)
-            segments = []
-            for seg in raw_segs:
-                for line in seg.splitlines():
-                    stripped_line = line.strip()
-                    if stripped_line:
-                        segments.append(stripped_line)
+            segments = [seg.strip() for seg in raw_segs if seg.strip()]
         elif cleaned.startswith("[") and cleaned.endswith("]"):
             json_text = extract_json_array_text(cleaned)
             segments = robust_json_loads(json_text)
         else:
             segments = [line.strip() for line in cleaned.splitlines() if line.strip()]
             
-        normalized = normalize_segments(segments, max_segments=max_segs)
+        normalized = normalize_segments(segments, max_segments=0)
         
         # 防御大模型切碎颜文字的后处理缝合
         final_segs = []
@@ -625,25 +1341,33 @@ def parse_segments_from_model_output(
         reconstructed = reconstruct_segments_from_model_output(
             normalized,
             fallback_text,
-            max_segments=max_segs,
+            max_segments=0,
         )
         if reconstructed is None:
-            return local_fallback_split(fallback_text, max_segs)
+            return local_fallback_split(
+                fallback_text,
+                max_segs,
+                max_chars_per_segment,
+            )
         if len(reconstructed) == 1 and len(normalized) > 1:
-            return local_fallback_split(fallback_text, max_segs)
+            return local_fallback_split(
+                fallback_text,
+                max_segs,
+                max_chars_per_segment,
+            )
         normalized = expand_under_split_natural_segments(
             reconstructed,
-            max_segments=max_segs,
+            max_segments=0,
         )
             
     except Exception:
         fallback = strip_thinking_content(fallback_text).strip()
-        return local_fallback_split(fallback, max_segs)
+        return local_fallback_split(fallback, max_segs, max_chars_per_segment)
         
     balanced = merge_segments_balancing_brackets(normalized)
     split_result = split_segments_at_bracket_boundaries(
         balanced,
-        max_segments=max_segs,
+        max_segments=0,
     )
     
     # 防止大模型或括号切分将颜文字剥离
@@ -675,7 +1399,8 @@ def expand_under_split_natural_segments(
         if (
             not segment
             or is_non_natural_language(segment)
-            or is_markdown_heavy(segment)
+            or is_markdown_document(segment)
+            or has_protected_block(segment)
         ):
             expanded.append(segment)
             continue
@@ -684,7 +1409,7 @@ def expand_under_split_natural_segments(
             expanded.extend(local_segments)
         else:
             expanded.append(segment)
-    return normalize_segments(expanded, max_segments)
+    return normalize_segments(expanded, max_segments=0)
 
 
 def calculate_send_delay(
@@ -703,175 +1428,76 @@ def calculate_send_delay(
     return max(0.0, min(max_d, normalized_delay))
 
 
-def local_fallback_split(raw_text: str, max_segs: int) -> list[str]:
-    """终极自愈兜底：本地纯逻辑高精切分（已优化 Markdown 笔记与非自然语言守卫顺序）。"""
-    if not raw_text:
+def local_fallback_split(
+    raw_text: str,
+    max_segs: int,
+    max_chars_per_segment: int | str = 0,
+) -> list[str]:
+    """终极自愈兜底：本地纯逻辑高精切分，保护 JSON/Markdown 块并平衡长度。"""
+    try:
+        max_segments = int(max_segs) if max_segs is not None else 0
+    except (ValueError, TypeError):
+        max_segments = 0
+    try:
+        max_chars = (
+            int(max_chars_per_segment)
+            if max_chars_per_segment is not None
+            else 0
+        )
+    except (ValueError, TypeError):
+        max_chars = 0
+
+    cleaned = strip_thinking_content(raw_text)
+    if not cleaned:
         return []
-        
-    # 1. 先检测整体是否为 Markdown 笔记，按段落（双换行）切分，保护内部格式
-    # 调整后，即便 Markdown 中嵌有 JSON/配置/代码块，也不会被错误识别成纯“非自然语言”跳过 Markdown 段落拆分
-    if is_markdown_heavy(raw_text):
-        paragraphs = re.split(r'\n[ \t]*\n', raw_text.strip())
-        segments = [p.strip() for p in paragraphs if p.strip()]
-        if not segments:
-            return safe_escape_segments([raw_text.strip()])
-        if max_segs > 0 and len(segments) > max_segs:
-            head = segments[: max_segs - 1]
-            tail = "\n\n".join(segments[max_segs - 1 :])
-            segments = head + [tail]
-        return safe_escape_segments(segments)
-        
-    # 2. 整体非自然语言检测 (纯 JSON/纯代码)，直接整段发送 (已强化 json 解析和低汉字密度过滤校验)
-    if is_non_natural_language(raw_text):
-        return [raw_text.strip()]
-        
-    # 常规自然语言切分 (包含预处理代码块/JSON块打包)
-    raw_lines = [line for line in raw_text.splitlines() if line.strip()]
-    merged_lines = []
-    buffer = []
-    in_block = False
-    block_type = None
-    
-    for line in raw_lines:
-        stripped = line.strip()
-        if not in_block:
-            if stripped.startswith("```"):
-                in_block = True
-                block_type = 'code'
-                buffer.append(line)
-            elif stripped.startswith("{") or stripped.startswith("["):
-                in_block = True
-                block_type = 'json'
-                buffer.append(line)
-            else:
-                merged_lines.append(stripped)
-        else:
-            buffer.append(line)
-            if block_type == 'code' and stripped.endswith("```"):
-                merged_lines.append("\n".join(buffer))
-                buffer = []
-                in_block = False
-            elif block_type == 'json':
-                text_buf = "\n".join(buffer)
-                open_b = text_buf.count("{") + text_buf.count("[")
-                close_b = text_buf.count("}") + text_buf.count("]")
-                if open_b == close_b and open_b > 0:
-                    merged_lines.append("\n".join(buffer))
-                    buffer = []
-                    in_block = False
-                    
-    if buffer:
-        merged_lines.append("\n".join(buffer))
 
-    # 优先把括号动作从话语中拆出，使本地兜底也偏向“话语”与“（动作）”分条。
-    expanded_lines = []
-    for line in merged_lines:
-        if (
-            "\n" in line
-            or (line.startswith("{") and line.endswith("}"))
-            or (line.startswith("[") and line.endswith("]"))
-        ):
-            expanded_lines.append(line)
-        else:
-            expanded_lines.extend(
-                split_segments_at_bracket_boundaries([line], max_segments=0)
-            )
+    # 纯 JSON/代码等非自然语言整体发送；若同时含受保护块，则按块解析而非整条直发。
+    if is_non_natural_language(cleaned) and not has_protected_block(cleaned):
+        return safe_escape_segments([cleaned.strip()])
 
-    sentence_split_lines = []
-    for line in expanded_lines:
-        if (
-            "\n" in line
-            or (line.startswith("{") and line.endswith("}"))
-            or (line.startswith("[") and line.endswith("]"))
-        ):
-            sentence_split_lines.append(line)
+    # 整篇均为 Markdown 结构时整体放行。
+    if is_markdown_document(cleaned):
+        return safe_escape_segments([cleaned.strip()])
+
+    runs: list[tuple[str, list[str]]] = []
+    text_parts: list[str] = []
+    for kind, chunk in split_protected_blocks(cleaned):
+        if kind == "text":
+            text_parts.extend(_split_plain_text(chunk))
+        else:
+            if text_parts:
+                runs.append(("text", text_parts))
+                text_parts = []
+            runs.append(("protected", [chunk.strip()]))
+    if text_parts:
+        runs.append(("text", text_parts))
+
+    target = compute_target_segment_length(cleaned, max_segments, max_chars)
+    packed: list[str] = []
+    for run_kind, parts in runs:
+        if run_kind == "protected":
+            packed.extend(parts)
             continue
-            
-        parts = []
-        current = []
-        depth = 0
-        i = 0
-        n = len(line)
-        
-        while i < n:
-            char = line[i]
-            if char in "（(【[":
-                depth += 1
-                current.append(char)
-                i += 1
-                continue
-            elif char in "）)】]":
-                depth = max(0, depth - 1)
-                current.append(char)
-                i += 1
-                continue
-                
-            if depth > 0:
-                current.append(char)
-                i += 1
-                continue
-                
-            if char == '.':
-                dots = ''
-                while i < n and line[i] == '.':
-                    dots += '.'
-                    i += 1
-                current.append(dots)
-                if i >= n or line[i].isspace():
-                    parts.append("".join(current).strip())
-                    current = []
-                continue
-                
-            if char == '…':
-                dots = ''
-                while i < n and line[i] == '…':
-                    dots += '…'
-                    i += 1
-                current.append(dots)
-                if i >= n or line[i].isspace():
-                    parts.append("".join(current).strip())
-                    current = []
-                continue
-                
-            # 标点聚类：吞噬后续连续的标点符号，防止 ？！ 被切碎
-            if char in "。！？!?~":
-                current.append(char)
-                i += 1
-                while i < n and line[i] in "。！？!?~.……,，":
-                    current.append(line[i])
-                    i += 1
-                parts.append("".join(current).strip())
-                current = []
-                continue
-                
-            current.append(char)
-            i += 1
-            
-        if current and "".join(current).strip():
-            parts.append("".join(current).strip())
-            
-        sentence_split_lines.extend(parts)
-        
-    # 后处理智能合并：将孤立的纯标点或颜文字向前合并到上一个有效文本段
-    merged_parts = []
-    for p in sentence_split_lines:
-        if merged_parts and is_kaomoji_or_pure_punct(p):
-            merged_parts[-1] += p  # 向前粘连
-        else:
-            merged_parts.append(p)
-            
-    balanced = merge_segments_balancing_brackets(merged_parts)
-    split_result = split_segments_at_bracket_boundaries(balanced, max_segments=max_segs)
-    
-    # 防止括号切分机制将带括号的短颜文字 (如 "(>_<)") 强行剥离成独立段
-    final_merged = []
-    for seg in split_result:
-        if final_merged and is_kaomoji_or_pure_punct(seg):
-            final_merged[-1] += seg  # 强行粘回上一段
-        else:
-            final_merged.append(seg)
-            
-    return safe_escape_segments(final_merged)
+        if max_chars > 0:
+            split_parts: list[str] = []
+            for segment in parts:
+                if (
+                    len(segment) > max_chars
+                    and not _is_unsplittable_segment(segment)
+                ):
+                    split_parts.extend(_split_overlong_segment(segment, max_chars))
+                else:
+                    split_parts.append(segment)
+            parts = split_parts
+        packed.extend(
+            pack_segments_to_target(
+                parts,
+                target,
+                max_segments=max_segments,
+                max_chars_per_segment=max_chars,
+            )
+        )
+    return safe_escape_segments(packed)
 
 
 def get_segments_or_fallback(
