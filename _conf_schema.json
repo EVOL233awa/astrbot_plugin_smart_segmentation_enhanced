@@ -62,6 +62,17 @@
       "step": 10
     }
   },
+  "markdown_clean_mode": {
+    "type": "string",
+    "description": "Markdown 清洗模式",
+    "hint": "off 不清洗；light 只清洗日常聊天文本里的轻量标记，检测到 JSON、代码围栏、表格等重度结构时跳过；heavy 清洗全部 Markdown 标记并保留正文内容。",
+    "default": "light",
+    "options": [
+      "off",
+      "light",
+      "heavy"
+    ]
+  },
   "temperature": {
     "type": "float",
     "description": "分段模型温度",

@@ -1,1 +1,2 @@
-# No external Python dependencies.
+markdown-it-py>=3.0.0
+mdit_plain>=1.0.0
