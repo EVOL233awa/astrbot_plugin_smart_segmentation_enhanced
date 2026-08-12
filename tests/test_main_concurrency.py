@@ -149,10 +149,12 @@ class FakeEvent:
 class TestSessionSerialization(unittest.IsolatedAsyncioTestCase):
     def _make_plugin(self):
         plugin = SmartSegmentationPlugin(FakeContext(), {"enabled": True})
+        first = "第一句内容比较长，用于测试串行锁。" * 8
+        second = "第二句内容也比较长，用于确认补发。" * 8
         plugin._store_prepared_segments(
             "s",
-            "第一句。第二句。",
-            ["第一句。", "第二句。"],
+            first + second,
+            [first, second],
         )
         return plugin
 
@@ -162,7 +164,9 @@ class TestSessionSerialization(unittest.IsolatedAsyncioTestCase):
         await lock.acquire()
         plugin._session_locks["s"] = lock
 
-        event = FakeEvent("s", FakeResult("第一句。第二句。"))
+        first = "第一句内容比较长，用于测试串行锁。" * 8
+        second = "第二句内容也比较长，用于确认补发。" * 8
+        event = FakeEvent("s", FakeResult(first + second))
         task = asyncio.create_task(plugin.on_decorating_result(event))
         await asyncio.sleep(0.02)
         self.assertFalse(task.done())
@@ -170,7 +174,7 @@ class TestSessionSerialization(unittest.IsolatedAsyncioTestCase):
         lock.release()
         await asyncio.wait_for(task, timeout=1)
 
-        self.assertEqual(event.result.chain[0].text, "第一句。")
+        self.assertEqual(event.result.chain[0].text, first)
         pending_id = event.extra["smart_segmentation_pending_id"]
         pending = plugin._pending_follow_ups.get(pending_id)
         self.assertIsNotNone(pending)
@@ -238,7 +242,12 @@ class TestSessionSerialization(unittest.IsolatedAsyncioTestCase):
                 "delay_max": 0.0,
             },
         )
-        text = "（开心）今天发工资了。\n要不要一起去吃大餐？"
+        text = (
+            "（开心）"
+            "今天需要测试的内容足够长，不能因为目标长度被合并成一条。"
+            "第二句也足够长，用来验证补发。"
+            "第三句继续补充内容，确保本地切分产生多条消息。"
+        )
         event = FakeEvent("s", FakeResult(text))
         response = FakeLLMResponse(text)
 
@@ -255,6 +264,63 @@ class TestSessionSerialization(unittest.IsolatedAsyncioTestCase):
 
         self.assertGreaterEqual(len(plugin.context.sent), 1)
         self.assertFalse(plugin._session_locks["s"].locked())
+
+    async def test_local_only_json_passes_through(self):
+        plugin = SmartSegmentationPlugin(
+            FakeContext(),
+            {"enabled": True, "use_local_only": True},
+        )
+        json_text = '{"key": "value with braces {x}", "arr": [1, 2]}'
+        event = FakeEvent("s", FakeResult(json_text))
+        response = FakeLLMResponse(json_text)
+
+        await plugin.on_llm_response(event, response)
+        await plugin.on_decorating_result(event)
+
+        self.assertEqual(event.result.chain[0].text, json_text)
+        self.assertNotIn("smart_segmentation_pending_id", event.extra)
+
+    async def test_local_only_code_fence_protected(self):
+        plugin = SmartSegmentationPlugin(
+            FakeContext(),
+            {
+                "enabled": True,
+                "use_local_only": True,
+                "delay_base": 0.0,
+                "delay_per_char": 0.0,
+                "delay_max": 0.0,
+            },
+        )
+        text = (
+            "Intro text.\n\n"
+            "```python\nprint('a')\n\nprint('b')\n```\n\n"
+            "Done."
+        )
+        event = FakeEvent("s", FakeResult(text))
+        response = FakeLLMResponse(text)
+
+        await plugin.on_llm_response(event, response)
+        await plugin.on_decorating_result(event)
+
+        self.assertEqual(event.result.chain[0].text, "Intro text.")
+        pending_id = event.extra["smart_segmentation_pending_id"]
+        pending = plugin._pending_follow_ups[pending_id]
+        self.assertTrue(
+            any(
+                seg.startswith("```python") and seg.endswith("```")
+                for seg in pending.segments
+            )
+        )
+
+    async def test_protected_block_uses_local_without_provider(self):
+        plugin = SmartSegmentationPlugin(FakeContext(), {"enabled": True})
+        text = "配置如下：\n\n{\n  \"host\": \"localhost\"\n}\n\n请检查。"
+        event = FakeEvent("s", FakeResult(text))
+        response = FakeLLMResponse(text)
+
+        await plugin.on_llm_response(event, response)
+
+        self.assertTrue(plugin._prepared_segments)
 
 
 if __name__ == "__main__":
