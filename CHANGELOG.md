@@ -4,6 +4,26 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.2.0] - 2026-08-12
+
+### Added
+- **代码层动态分段长度**：按总字数、`max_segments` 与 `max_chars_per_segment` 计算目标段长，并用平衡打包替代 `head + tail` 尾部合并，消除长文末段堆积。
+- **JSON 引号感知保护**：跳过字符串与转义内容后定位最外层 `{}` / `[]`，JSON 块整体输出；无成对括号时回退普通分段。
+- **Markdown 块级保护**：代码围栏、连续表格、连续列表、连续引用整块保护；围栏未闭合时保护到文本末尾，不做二次切分。
+- **重度 Markdown 整篇放行**：整篇非空行均为 Markdown 结构时直接发送；混合文本只保护 Markdown 块，块外普通正文仍正常分段。
+- **Markdown 清洗模式**：新增 `markdown_clean_mode`，支持 `off` / `light` / `heavy`。light 只清洗轻量标记并跳过 JSON、代码围栏和重度结构；heavy 清洗全部 Markdown 标记并保留正文内容；`markdown-it-py` / `mdit_plain` 缺失时输出 warning，并降级为内容保全式正则清洗，避免 JSON、代码正文和链接 URL 信息丢失。
+
+### Changed
+- **分段 Prompt 限制**：修改分段 prompt，增加分段数量限制；目标长度全部由代码层决定。
+- **保护与长度逻辑统一**：本地切分与模型切分的兜底/稳定阶段共用新增的 JSON/Markdown 块保护与平衡打包逻辑。
+- `requirements.txt` 新增 `markdown-it-py>=3.0.0` 与 `mdit_plain>=1.0.0`。
+
+### Fixed
+- **受保护块直发**：检测到 JSON、代码围栏、表格、列表或引用时跳过 LLM 分段，直接使用本地保护切分，避免小模型改写或吞掉 JSON/Markdown 块。
+- **管道符整段解析**：模型输出的 `|` 只作为消息边界，不再把消息内部换行二次拆成多段，Markdown/JSON 块可保持完整。
+- **本地块判定顺序**：正文+JSON/代码块不再因特殊字符密度被整条判为非自然语言，块外正文仍正常分段。
+- **Markdown 区域合并**：连续标题/列表/引用/表格/分割线/围栏合并为整块；仅无语言标签的纯 ```` ``` ```` 行作为围栏闭合，避免嵌套语言标签误判。
+
 ## [1.1.1] - 2026-08-10
 
 ### Added
@@ -81,3 +101,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 [1.0.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.0.1
 [1.0.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.0.2
 [1.1.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.1.0
+[1.1.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.1.1
+[1.2.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.2.0
