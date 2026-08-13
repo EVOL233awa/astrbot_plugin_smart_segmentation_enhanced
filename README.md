@@ -66,6 +66,18 @@
 
 > 💡 **使用建议**：建议关闭 AstrBot 内置的 `platform_settings.segmented_reply.enable`，避免其与本插件产生重复分段。
 
+## 架构说明
+
+架构图如下，箭头表示调用/写入方向，不画返回方向：
+
+![智能分段插件架构图](assets/architecture.png)
+
+- `on_llm_response` 只负责预计算，不发送消息。
+- `on_decorating_result` 负责替换首段并登记补发，不直接发送剩余段。
+- `after_message_sent` 在首段发送成功后启动剩余段异步补发。
+- 缓存未命中时，`on_decorating_result` 会调用本地高精切分兜底。
+- `markdown-it` / `mdit_plain` 仅在 heavy 清洗且依赖存在时被调用。
+
 ## 技术实现与 AI 辅助说明
 
 本项目的核心分段逻辑与优化策略（包含协议重构、幻觉阻断、Markdown 保护等）在编写与重构过程中，参考并使用了 AI 模型进行代码逻辑验证与优化建议。
