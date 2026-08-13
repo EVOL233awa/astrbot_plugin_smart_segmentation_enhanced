@@ -4,6 +4,17 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.2.1] - 2026-08-13
+
+### Changed
+- **移除括号补齐自愈**：1.1.0 的原文标点重建已能恢复模型丢掉的括号，不再对分段结果逐段补齐 `()` / `[]` / `{}`，避免模型在括号内部切错时二次改写原文。
+
+### Fixed
+- **修复模型在括号内部切错时括号被复制改写**：模型输出如 `（开 | 心）` 时不再被补成 `（开）（心）`，改为保留原文切片边界，拼接后仍可还原原文。
+
+### Added
+- **括号自愈回归测试**：覆盖模型丢括号、括号内部切错与嵌套括号内部切错场景。
+
 ## [1.2.0] - 2026-08-12
 
 ### Added
@@ -103,3 +114,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 [1.1.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.1.0
 [1.1.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.1.1
 [1.2.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.2.0
+[1.2.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.2.1

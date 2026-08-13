@@ -1,7 +1,7 @@
 name: astrbot_plugin_smart_segmentation
 display_name: 智能分段
 desc: 将 AstrBot 主回复自然拆分为多条聊天消息，并异步补发剩余段；支持 LLM 分段与纯本地高精度切分。（个人维护 fork 版）
-version: v1.2.0
+version: v1.2.1
 author: EvoidNGC
 repo: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation
 astrbot_version: ">=4.16,<5"
