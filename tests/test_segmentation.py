@@ -387,5 +387,50 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
             )
         )
 
+    def _assert_model_segments_restore_original(self, original, model_output):
+        segments = parse_segments_from_model_output(
+            model_output,
+            fallback_text=original,
+            max_segments=0,
+            max_chars_per_segment=0,
+        )
+        self.assertIsNotNone(segments)
+        self.assertGreater(len(segments), 0)
+        joined = "".join(segments).replace(" ", "")
+        self.assertEqual(joined, original.replace(" ", ""))
+        return segments
+
+    def test_bracket_self_heal_removed_when_model_splits_inside(self):
+        """验证模型在括号内部切错时不再二次补齐生成新括号。"""
+        original = "（开心）今天天气真好。"
+        model_output = "（开 | 心）今天天气真好。"
+        segments = self._assert_model_segments_restore_original(
+            original,
+            model_output,
+        )
+        self.assertNotIn("（开）（", "".join(segments))
+
+    def test_bracket_self_heal_not_needed_when_model_drops_brackets(self):
+        """验证原文重建已能恢复模型丢掉的括号。"""
+        original = "（开心）今天天气真好。"
+        model_output = "开心 | 今天天气真好。"
+        segments = parse_segments_from_model_output(
+            model_output,
+            fallback_text=original,
+            max_segments=0,
+            max_chars_per_segment=0,
+        )
+        self.assertEqual(segments, ["（开心）", "今天天气真好。"])
+
+    def test_nested_bracket_split_keeps_original_content(self):
+        """验证嵌套括号内部切错时保留原文，不被自愈改写成多组新括号。"""
+        original = "（小声说（认真））我知道了。"
+        model_output = "（小声说（ | 认真））我知道了。"
+        segments = self._assert_model_segments_restore_original(
+            original,
+            model_output,
+        )
+        self.assertNotIn("（认真）（", "".join(segments))
+
 if __name__ == "__main__":
     unittest.main()

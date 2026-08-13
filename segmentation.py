@@ -947,34 +947,6 @@ def is_action_only_text(text: str) -> bool:
     return False
 
 
-def has_unbalanced_brackets(text: str) -> bool:
-    """判断文本中是否存在未闭合的括号。"""
-    for open_bracket, close_bracket in BRACKET_PAIRS:
-        if text.count(open_bracket) != text.count(close_bracket):
-            return True
-    return False
-
-
-def merge_segments_balancing_brackets(segments: list[str]) -> list[str]:
-    """合并或自愈括号平衡，防止因模型丢括号导致全局粘连合并。"""
-    if not segments:
-        return list(segments)
-        
-    fixed_segments = []
-    for segment in segments:
-        s = segment
-        for open_bracket, close_bracket in BRACKET_PAIRS:
-            open_count = s.count(open_bracket)
-            close_count = s.count(close_bracket)
-            if open_count > close_count:
-                s += close_bracket * (open_count - close_count)
-            elif close_count > open_count:
-                s = open_bracket * (close_count - open_count) + s
-        fixed_segments.append(s)
-        
-    return fixed_segments
-
-
 def split_text_at_brackets(text: str) -> list[str]:
     """把单段文本按括号边界拆成片段。已修复中文括号前置字符导致的失效问题。"""
     if not text:
@@ -1364,9 +1336,8 @@ def parse_segments_from_model_output(
         fallback = strip_thinking_content(fallback_text).strip()
         return local_fallback_split(fallback, max_segs, max_chars_per_segment)
         
-    balanced = merge_segments_balancing_brackets(normalized)
     split_result = split_segments_at_bracket_boundaries(
-        balanced,
+        normalized,
         max_segments=0,
     )
     
