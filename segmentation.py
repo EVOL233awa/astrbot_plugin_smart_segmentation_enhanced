@@ -38,6 +38,9 @@ BRACKET_PAIRS: tuple[tuple[str, str], ...] = (
 )
 
 _LEFT_BOUNDARY_CHARS = frozenset("（([【“‘「『《")
+_LEADING_PUNCTUATION_RE = re.compile(
+    r"^(?:…+|\.{2,}|·+|~+|—+|–+|―+|〜+|？+|！+|。{2,})+$"
+)
 
 STYLE_GUIDES = {
     "natural": "像和朋友微信聊天一样自然地分条发送。有的消息短有的长，节奏随意。",
@@ -78,6 +81,12 @@ def is_kaomoji_or_pure_punct(text: str) -> bool:
         return True
         
     return False
+
+
+def is_leading_punctuation(text: str) -> bool:
+    """判断文本是否为应归属后续内容段的前导标点。"""
+    stripped = str(text or "").strip()
+    return bool(_LEADING_PUNCTUATION_RE.match(stripped))
 
 
 # 基础清洗与检测工具
@@ -1341,13 +1350,28 @@ def parse_segments_from_model_output(
         max_segments=0,
     )
     
-    # 防止大模型或括号切分将颜文字剥离
+    # 防止大模型或括号切分将颜文字剥离；动作段后的纯标点先缓存，
+    # 再归属下一个内容段，避免粘回动作后被后续打包与说话内容重新合并。
     final_merged = []
+    pending_leading = ""
     for seg in split_result:
-        if final_merged and is_kaomoji_or_pure_punct(seg):
+        if pending_leading:
+            seg = pending_leading + seg
+            pending_leading = ""
+        if final_merged and (
+            is_kaomoji_or_pure_punct(seg) or is_leading_punctuation(seg)
+        ):
+            if is_action_only_text(final_merged[-1]):
+                pending_leading = seg
+                continue
             final_merged[-1] += seg
         else:
             final_merged.append(seg)
+    if pending_leading:
+        if final_merged:
+            final_merged[-1] += pending_leading
+        else:
+            final_merged.append(pending_leading)
 
     if max_chars_per_segment:
         final_merged = stabilize_segment_lengths(

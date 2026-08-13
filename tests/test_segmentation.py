@@ -396,8 +396,8 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         )
         self.assertIsNotNone(segments)
         self.assertGreater(len(segments), 0)
-        joined = "".join(segments).replace(" ", "")
-        self.assertEqual(joined, original.replace(" ", ""))
+        joined = "".join("".join(segments).split())
+        self.assertEqual(joined, "".join(original.split()))
         return segments
 
     def test_bracket_self_heal_removed_when_model_splits_inside(self):
@@ -431,6 +431,78 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
             model_output,
         )
         self.assertNotIn("（认真）（", "".join(segments))
+
+    def test_action_followed_by_ellipsis_stays_separate(self):
+        """验证动作段后的中文省略号归属后面说话段。"""
+        original = "（动作）\n\n……嗯。说话。"
+        model_output = "（动作） | ……嗯。说话。"
+        segments = parse_segments_from_model_output(
+            model_output,
+            fallback_text=original,
+            max_segments=12,
+            max_chars_per_segment=180,
+        )
+        self.assertEqual(segments, ["（动作）", "……嗯。说话。"])
+
+    def test_ascii_ellipsis_leading_ownership(self):
+        """验证 ASCII 省略号 ... 同样归属后面说话段。"""
+        original = "（动作）\n\n...嗯。说话。"
+        model_output = "（动作） | ...嗯。说话。"
+        segments = parse_segments_from_model_output(
+            model_output,
+            fallback_text=original,
+            max_segments=12,
+            max_chars_per_segment=180,
+        )
+        self.assertEqual(segments, ["（动作）", "...嗯。说话。"])
+
+    def test_middle_dot_leading_ownership(self):
+        """验证中黑点 · 不会粘到前一个动作段。"""
+        original = "（动作）\n\n·嗯。说话。"
+        model_output = "（动作） | ·嗯。说话。"
+        segments = self._assert_model_segments_restore_original(
+            original,
+            model_output,
+        )
+        self.assertEqual(segments[0], "（动作）")
+        self.assertIn("嗯。说话。", segments[1])
+
+    def test_question_exclamation_leading_ownership(self):
+        """验证段首 ？！ 归属后续说话内容。"""
+        original = "（动作）\n\n？！嗯。说话。"
+        model_output = "（动作） | ？！嗯。说话。"
+        segments = self._assert_model_segments_restore_original(
+            original,
+            model_output,
+        )
+        self.assertEqual(segments[0], "（动作）")
+        self.assertTrue(segments[1].startswith("？！"))
+
+    def test_consecutive_action_brackets_with_ellipsis(self):
+        """验证连续动作括号夹省略号时不会把省略号粘回第一个动作。"""
+        original = "（叹气）……（苦笑）说话。"
+        model_output = "（叹气）…… | （苦笑）说话。"
+        segments = self._assert_model_segments_restore_original(
+            original,
+            model_output,
+        )
+        self.assertEqual(segments[0], "（叹气）")
+        self.assertNotIn("（叹气）（", "".join(segments))
+
+    def test_split_function_and_code_comment_not_broken(self):
+        """验证 split() 和代码围栏内注释不会被误切。"""
+        segments = local_fallback_split("调用 split() 完成。", 0, 180)
+        self.assertEqual(segments, ["调用 split() 完成。"])
+
+        code = "代码：\n```python\n# (注释)\nprint(split())\n```\n结尾"
+        code_segments = local_fallback_split(code, 0, 180)
+        self.assertTrue(
+            any(
+                "# (注释)" in seg
+                and "split()" in seg
+                for seg in code_segments
+            )
+        )
 
 if __name__ == "__main__":
     unittest.main()
