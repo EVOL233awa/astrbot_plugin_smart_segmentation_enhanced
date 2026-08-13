@@ -4,6 +4,17 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.2.2] - 2026-08-13
+
+### Changed
+- **前导标点归属规则**：采用“动作括号段 > 说话/正文段 > 前导标点”的内部归属规则，覆盖中文省略号、ASCII `...`、中黑点 `·`、`？！` 等段首标点，不新增用户配置。
+
+### Fixed
+- **修复动作段后的前导标点被粘回动作**：模型已给出 `（动作） | ……说话` 边界时，前导标点不再粘回动作段，避免后续打包把动作与说话内容重新合并。
+
+### Added
+- **前导标点与代码边界回归测试**：覆盖中文省略号、ASCII `...`、中黑点 `·`、`？！`、连续动作括号，以及 `split()` 和代码围栏内注释保护。
+
 ## [1.2.1] - 2026-08-13
 
 ### Changed
@@ -115,3 +126,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 [1.1.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.1.1
 [1.2.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.2.0
 [1.2.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.2.1
+[1.2.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.2.2
