@@ -24,6 +24,8 @@ from .segmentation import (
     clean_markdown_by_mode,
     normalize_response_text_for_key,
     normalize_content_key,
+    mask_pipe_in_text,
+    restore_pipe_in_segments,
     # 导入非自然语言检测与本地逻辑切分工具
     is_non_natural_language,
     is_markdown_document,
@@ -461,7 +463,12 @@ class SmartSegmentationPlugin(Star):
         settings: SegmentationSettings,
     ) -> list[str]:
         """调用大模型并传入针对性提示词，执行智能分段流程。"""
-        prompt = build_segmentation_prompt(text, settings.style, settings.max_segments)
+        masked_text, pipe_placeholder = mask_pipe_in_text(text)
+        prompt = build_segmentation_prompt(
+            masked_text,
+            settings.style,
+            settings.max_segments,
+        )
         response = await self.context.llm_generate(
             chat_provider_id=provider_id,
             prompt=prompt,
@@ -472,12 +479,13 @@ class SmartSegmentationPlugin(Star):
         if not raw_text:
             return [text]
 
-        return parse_segments_from_model_output(
+        segments = parse_segments_from_model_output(
             raw_text,
-            fallback_text=text,
+            fallback_text=masked_text,
             max_segments=settings.max_segments,
             max_chars_per_segment=settings.max_chars_per_segment,
         )
+        return restore_pipe_in_segments(segments, pipe_placeholder)
 
     def _store_prepared_segments(
         self,

@@ -36,6 +36,7 @@ BRACKET_PAIRS: tuple[tuple[str, str], ...] = (
     ("【", "】"),
     ("[", "]"),
 )
+_MAX_ACTION_LEN = 30
 
 _LEFT_BOUNDARY_CHARS = frozenset("（([【“‘「『《")
 _LEADING_PUNCTUATION_RE = re.compile(
@@ -157,8 +158,8 @@ def safe_escape_segments(segments: list[str]) -> list[str]:
             processed_segments.append(seg)
             continue
             
-        # 2. 如果是 Markdown 块引用（以 > 开头），保留开头的 Markdown 语法标记，仅转义后续文本内容
-        if stripped.startswith(">"):
+        # 2. 如果是 Markdown 块引用（> 后接空白或正文），保留语法标记，仅转义后续文本内容
+        if _MD_QUOTE_RE.match(stripped):
             boundary = seg.find(">")
             header = seg[:boundary + 1]
             body = seg[boundary + 1:]
@@ -208,6 +209,9 @@ _MD_HEADING_RE = re.compile(r"^#{1,6}\s")
 _MD_HR_RE = re.compile(r"^[-*_]{3,}\s*$")
 _MD_TABLE_LINE_RE = re.compile(r"^\|.*\|\s*$")
 _MD_LIST_LINE_RE = re.compile(r"^([-*+]|\d+\.)\s")
+_MD_QUOTE_RE = re.compile(r"^>(?:\s|[\u4e00-\u9fa5])")
+_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_LINK_IMAGE_RE = re.compile(r"!?\[([^\]\n]*)\]\(([^)\n]*)\)")
 
 
 def _is_json_like_block(text: str) -> bool:
@@ -295,7 +299,7 @@ def _consume_list(lines: list[str], start: int) -> tuple[list[str], int]:
 def _consume_quote(lines: list[str], start: int) -> tuple[list[str], int]:
     block = [lines[start]]
     index = start + 1
-    while index < len(lines) and lines[index].strip().startswith(">"):
+    while index < len(lines) and _MD_QUOTE_RE.match(lines[index].strip()):
         block.append(lines[index])
         index += 1
     return block, index
@@ -307,7 +311,7 @@ def _is_markdown_block_start(line: str) -> bool:
         stripped.startswith("```")
         or _MD_TABLE_LINE_RE.match(stripped) is not None
         or _MD_LIST_LINE_RE.match(stripped) is not None
-        or stripped.startswith(">")
+        or _MD_QUOTE_RE.match(stripped) is not None
     )
 
 
@@ -497,16 +501,17 @@ def compute_target_segment_length(
 
 
 def _join_adjacent(left: str, right: str, limit: int = 0) -> str:
-    """Join two segments without physically gluing words together."""
+    """Join two segments without physically gluing ASCII words together."""
     if not left:
         return right
     if not right:
         return left
     if left[-1].isspace() or right[0].isspace():
         return left + right
-    spaced = left + " " + right
-    if limit <= 0 or len(spaced) <= limit:
-        return spaced
+    if is_ascii_alnum(left[-1]) and is_ascii_alnum(right[0]):
+        spaced = left + " " + right
+        if limit <= 0 or len(spaced) <= limit:
+            return spaced
     return left + right
 
 
@@ -530,6 +535,45 @@ def _merge_to_max_segments(
                 result[index + 1],
                 max_chars if max_chars > 0 else 0,
             )
+            if max_chars > 0 and len(merged) > max_chars:
+                continue
+            if best_length is None or len(merged) < best_length:
+                best_index = index
+                best_length = len(merged)
+        if best_index is None:
+            break
+        result[best_index] = _join_adjacent(
+            result[best_index],
+            result[best_index + 1],
+            max_chars if max_chars > 0 else 0,
+        )
+        del result[best_index + 1]
+    return result
+
+
+def _merge_to_global_max(
+    segments: list[str],
+    max_segments: int,
+    max_chars: int,
+) -> list[str]:
+    """全局合并普通文本段以满足硬段数，同时保护动作段与受保护块不被合并。"""
+    if max_segments <= 0 or len(segments) <= max_segments:
+        return list(segments)
+    result = list(segments)
+    while len(result) > max_segments:
+        best_index: int | None = None
+        best_length: int | None = None
+        for index in range(len(result) - 1):
+            left = result[index]
+            right = result[index + 1]
+            if (
+                is_action_only_text(left)
+                or is_action_only_text(right)
+                or _is_unsplittable_segment(left)
+                or _is_unsplittable_segment(right)
+            ):
+                continue
+            merged = _join_adjacent(left, right, max_chars if max_chars > 0 else 0)
             if max_chars > 0 and len(merged) > max_chars:
                 continue
             if best_length is None or len(merged) < best_length:
@@ -665,9 +709,30 @@ def _sentence_split_line(line: str) -> list[str]:
     return parts
 
 
+def _mask_inline_atoms(text: str) -> tuple[str, list[str]]:
+    """保护行内代码与链接/图片，返回 (masked_text, atoms)。"""
+    atoms: list[str] = []
+
+    def _repl(match: re.Match[str]) -> str:
+        atoms.append(match.group(0))
+        return f"\x00A{len(atoms) - 1}\x00"
+
+    masked = _INLINE_CODE_RE.sub(_repl, text)
+    masked = _LINK_IMAGE_RE.sub(_repl, masked)
+    return masked, atoms
+
+
+def _restore_inline_atoms(text: str, atoms: list[str]) -> str:
+    """把行内原子占位符还原为原始内容。"""
+    for index in range(len(atoms) - 1, -1, -1):
+        text = text.replace(f"\x00A{index}\x00", atoms[index])
+    return text
+
+
 def _split_plain_text(text: str) -> list[str]:
     """Split ordinary text into atomic action/sentence parts."""
-    lines = [line for line in text.splitlines() if line.strip()]
+    masked_text, inline_atoms = _mask_inline_atoms(text)
+    lines = [line for line in masked_text.splitlines() if line.strip()]
     expanded: list[str] = []
     for line in lines:
         expanded.extend(
@@ -684,7 +749,8 @@ def _split_plain_text(text: str) -> list[str]:
             merged[-1] += part
         else:
             merged.append(part)
-    return [part for part in merged if part.strip()]
+    result = [part for part in merged if part.strip()]
+    return [_restore_inline_atoms(part, inline_atoms) for part in result]
 
 
 def _clean_inline_markdown(text: str) -> str:
@@ -710,39 +776,6 @@ def clean_light_markdown(text: str) -> str:
     return _clean_inline_markdown(text)
 
 
-_MDIT_INSTANCE = None
-_MDIT_AVAILABLE = False
-try:
-    from markdown_it import MarkdownIt
-    from mdit_plain.renderer import RendererPlain
-
-    _MDIT_INSTANCE = MarkdownIt(renderer_cls=RendererPlain)
-    _MDIT_AVAILABLE = True
-except Exception:
-    _MDIT_INSTANCE = None
-    _MDIT_AVAILABLE = False
-
-_HEAVY_FALLBACK_WARNED = False
-
-
-def _warn_heavy_fallback_once() -> None:
-    global _HEAVY_FALLBACK_WARNED
-    if _HEAVY_FALLBACK_WARNED:
-        return
-    _HEAVY_FALLBACK_WARNED = True
-    _LOG.warning(
-        "mdit_plain/markdown-it-py 不可用，heavy Markdown 清洗降级为内容保全式正则"
-    )
-
-
-def _strip_code_fence_markers(chunk: str) -> str:
-    return "\n".join(
-        line
-        for line in chunk.splitlines()
-        if not line.strip().startswith("```")
-    )
-
-
 def _strip_table_markers(chunk: str) -> str:
     rows: list[str] = []
     for line in chunk.splitlines():
@@ -766,10 +799,6 @@ def _strip_list_markers(chunk: str) -> str:
         cleaned = re.sub(r"^\d+\.\s+", "", cleaned)
         cleaned_lines.append(cleaned)
     return "\n".join(cleaned_lines)
-
-
-def _strip_quote_markers(chunk: str) -> str:
-    return "\n".join(re.sub(r"^>\s?", "", line) for line in chunk.splitlines())
 
 
 def _clean_heavy_text_regex(text: str) -> str:
@@ -827,27 +856,10 @@ def clean_heavy_markdown(text: str) -> str:
     for kind, chunk in chunks:
         if kind == "json":
             cleaned_parts.append(chunk)
-        elif kind == "code":
-            cleaned_parts.append(_strip_code_fence_markers(chunk))
-        elif kind == "table":
-            cleaned_parts.append(_strip_table_markers(chunk))
-        elif kind == "list":
-            cleaned_parts.append(_strip_list_markers(chunk))
-        elif kind == "quote":
-            cleaned_parts.append(_strip_quote_markers(chunk))
         elif kind == "markdown":
             cleaned_parts.append(_clean_markdown_region_heavy(chunk))
         else:
-            if _MDIT_AVAILABLE:
-                try:
-                    assert _MDIT_INSTANCE is not None
-                    cleaned_parts.append(_MDIT_INSTANCE.render(chunk))
-                except Exception:
-                    _warn_heavy_fallback_once()
-                    cleaned_parts.append(_clean_heavy_text_regex(chunk))
-            else:
-                _warn_heavy_fallback_once()
-                cleaned_parts.append(_clean_heavy_text_regex(chunk))
+            cleaned_parts.append(_clean_heavy_text_regex(chunk))
     return "\n".join(part for part in cleaned_parts if part is not None).strip()
 
 
@@ -997,7 +1009,12 @@ def split_text_at_brackets(text: str) -> list[str]:
             buffer.append(text[index:])
             index = len(text)
             break
-            
+
+        if scan_index - index > _MAX_ACTION_LEN:
+            buffer.append(text[index:scan_index])
+            index = scan_index
+            continue
+
         if buffer:
             parts.append("".join(buffer))
             buffer = []
@@ -1027,10 +1044,11 @@ def split_segments_at_bracket_boundaries(
         
     result: list[str] = []
     for segment in segments:
-        for part in split_text_at_brackets(segment):
+        masked, atoms = _mask_inline_atoms(segment)
+        for part in split_text_at_brackets(masked):
             stripped_part = part.strip()
             if stripped_part and not re.match(r"^[_\-\*\s]{3,}$", stripped_part):
-                result.append(stripped_part)
+                result.append(_restore_inline_atoms(stripped_part, atoms))
                 
     if not result:
         return result
@@ -1228,6 +1246,7 @@ def stabilize_segment_lengths(
                 max_chars_per_segment=max_chars,
             )
         )
+    stabilized = _merge_to_global_max(stabilized, max_segs, max_chars)
     return stabilized
 
 
@@ -1239,38 +1258,35 @@ def hash_normalized_text(text: str) -> str:
     return hashlib.sha1(normalized.encode("utf-8")).hexdigest()
 
 
+def mask_pipe_in_text(text: str) -> tuple[str, str]:
+    """把原文中的 | 替换为无歧义 alnum 占位符，返回 (masked_text, placeholder)。"""
+    placeholder = "RAWPIPE"
+    while placeholder in text:
+        placeholder += "0"
+    return text.replace("|", placeholder), placeholder
+
+
+def restore_pipe_in_segments(segments: list[str], placeholder: str) -> list[str]:
+    """把分段结果中的占位符还原为原始 |。"""
+    return [seg.replace(placeholder, "|") for seg in segments]
+
+
 # Prompt 工程防御
 def build_segmentation_prompt(text: str, style: str, max_segments: int) -> str:
-    """构建智能分段提示词。"""
+    """构建极简分段提示词，保留 3 条 few-shot 示例锁定输出格式。"""
     style_guide = STYLE_GUIDES.get(style, STYLE_GUIDES["natural"])
-    return f"""你是聊天消息分条助手。只负责把输入拆成适合微信/QQ 分条发送的消息，不总结、不润色、不删字。
+    return f"""把输入拆成适合聊天分条的消息。不总结、不删字、不改标点，每条用 " | " 分隔。圆括号动作单独一条。以。！？结尾的完整句子之间必须拆开。最多 {max_segments} 条。风格：{style_guide}
 
-【输出格式】
-每条消息之间用 " | " 分隔；消息内部保留原文换行，但不能使用额外的 " | " 分隔符。
-每条消息内部保留原文全部标点和文字，只允许删除每条消息末尾的句号。
+示例：
+输入：（开心）今天发工资了，要不要一起去吃大餐？
+输出：（开心） | 今天发工资了，要不要一起去吃大餐？
 
-【拆分规则】
-1. 圆括号动作（如（开心）、（轻声说））尽量单独一条；动作前面或后面的话另起一条。
-2. 普通对话按语义分条，单条不要太长也不要太碎。
-3. 绝对不要把连续标点或颜文字从所在句子切开，它们必须留在原句里。
-4. 如果原文只有一句话，直接原样输出一段。
-5. 最多拆成 {max_segments} 条；不要为了凑条数切碎，也不要把大量内容堆到最后一条。
-6. 同一消息内不要粘连多个完整句子；以。！？结尾的完整句子之间必须用 | 拆开。
-
-【聊天风格】
-{style_guide}
-
-【示例】
-输入：
-（开心）今天发工资了，要不要一起去吃大餐？
-输出：
-（开心） | 今天发工资了，要不要一起去吃大餐？
-
-输入：
-欸？！><
+输入：欸？！><
 今天天气真好...qwq
-输出：
-欸？！>< | 今天天气真好...qwq
+输出：欸？！>< | 今天天气真好...qwq
+
+输入：（点头）嗯，我知道了。那我们先按计划执行。
+输出：（点头） | 嗯，我知道了。 | 那我们先按计划执行。
 
 输入：
 {text}"""
@@ -1315,7 +1331,12 @@ def parse_segments_from_model_output(
         
         # 复读 Few-shot 幻觉检测与降级机制
         joined_result = "".join(normalized)
-        hallucination_keywords = ["今天发工资了", "要不要一起去吃大餐", "今天天气真好", "公园散步", "突然下雨了", "真是不走运"]
+        hallucination_keywords = [
+            "今天发工资了",
+            "要不要一起去吃大餐",
+            "今天天气真好",
+            "先按计划执行",
+        ]
         if any(kw in joined_result and kw not in fallback_text for kw in hallucination_keywords):
             raise ValueError("Detected few-shot hallucination")
 
@@ -1492,63 +1513,6 @@ def local_fallback_split(
                 max_chars_per_segment=max_chars,
             )
         )
+    if max_segments > 0:
+        packed = _merge_to_global_max(packed, max_segments, max_chars)
     return safe_escape_segments(packed)
-
-
-def get_segments_or_fallback(
-    raw_text: str,
-    cache: dict[str, list[str]] | None = None,
-    hash_to_norm: dict[str, str] | None = None,
-    *,
-    max_segments: int | str = 0,
-) -> list[str]:
-    """智能/本地混合式分段分配器。"""
-    try:
-        max_segs = int(max_segments) if max_segments is not None else 0
-    except (ValueError, TypeError):
-        max_segs = 0
-        
-    cleaned_raw = strip_thinking_content(raw_text)
-    if not cleaned_raw:
-        return []
-        
-    norm_text = normalize_response_text_for_key(cleaned_raw)
-    if not norm_text:
-        return []
-        
-    exact_hash = hash_normalized_text(cleaned_raw)
-    if cache and exact_hash in cache:
-        return safe_escape_segments(cache[exact_hash])
-        
-    if cache and hash_to_norm:
-        cache_norm_map = {}
-        for h, segs in cache.items():
-            if h in hash_to_norm and segs:
-                cache_norm_map[hash_to_norm[h]] = segs
-                
-        remaining = norm_text.strip()
-        assembled_segs = []
-        matched_any = False
-        
-        while remaining:
-            best_match_len = 0
-            best_match_segs = None
-            for norm_key, segs in cache_norm_map.items():
-                if remaining.startswith(norm_key):
-                    key_len = len(norm_key)
-                    if key_len > best_match_len:
-                        if key_len == len(remaining) or remaining[key_len] == ' ':
-                            best_match_len = key_len
-                            best_match_segs = segs
-                            
-            if best_match_segs:
-                assembled_segs.extend(best_match_segs)
-                remaining = remaining[best_match_len:].strip()
-                matched_any = True
-            else:
-                break
-                
-        if matched_any and not remaining:
-            return safe_escape_segments(assembled_segs)
-            
-    return local_fallback_split(cleaned_raw, max_segs)
