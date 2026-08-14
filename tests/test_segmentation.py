@@ -14,9 +14,11 @@ from segmentation import (
     is_markdown_document,
     is_markdown_heavy,
     local_fallback_split,
+    mask_pipe_in_text,
     normalize_content_key,
     parse_segments_from_model_output,
     reconstruct_segments_from_model_output,
+    restore_pipe_in_segments,
     stabilize_segment_lengths,
 )
 
@@ -503,6 +505,70 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
                 for seg in code_segments
             )
         )
+
+    def test_kaomoji_leading_greater_than_escaped(self):
+        """验证以 > 开头的颜文字不再被误判为 Markdown 引用而跳过转义。"""
+        self.assertEqual(local_fallback_split(">_<", 0, 180), ["＞_＜"])
+        self.assertEqual(
+            local_fallback_split("（动作）>_< 你好。", 8, 180),
+            ["（动作）", "＞_＜ 你好。"],
+        )
+
+    def test_inline_link_code_not_split(self):
+        """验证行内链接与行内代码不会被括号或句号切开。"""
+        segments = local_fallback_split(
+            "看这个 [链接](https://example.com) 很酷。",
+            0,
+            180,
+        )
+        self.assertTrue(any("[链接](https://example.com)" in seg for seg in segments))
+        self.assertEqual(
+            local_fallback_split("代码：`split()` 会分割。", 0, 180),
+            ["代码：`split()` 会分割。"],
+        )
+
+    def test_global_max_segments_with_protected_block(self):
+        """验证正文与受保护块穿插时全局最大段数仍然生效。"""
+        s1 = "第一句内容足够长。" * 20
+        s2 = "第二句内容足够长。" * 20
+        text = s1 + "\n\n" + '{"a": 1}' + "\n\n" + s2
+        segments = local_fallback_split(text, 3, 180)
+        self.assertLessEqual(len(segments), 3)
+        self.assertTrue(any(seg.strip().startswith("{") for seg in segments))
+
+    def test_long_bracket_not_split_as_action(self):
+        """验证超过 30 字符的括号不会被当作动作拆出。"""
+        long_text = "（" + "这是超过三十个字符的说明文字" * 3 + "）然后说话。"
+        segments = local_fallback_split(long_text, 8, 180)
+        self.assertEqual(len(segments), 1)
+
+    def test_pipe_mask_and_restore(self):
+        """验证管道符前置掩码与还原。"""
+        masked, placeholder = mask_pipe_in_text("cat a.txt | grep foo")
+        self.assertNotIn("|", masked)
+        self.assertEqual(
+            restore_pipe_in_segments([masked], placeholder),
+            ["cat a.txt | grep foo"],
+        )
+
+    def test_prompt_has_three_few_shot_examples(self):
+        """验证极简 Prompt 保留 3 条 few-shot 示例。"""
+        prompt = build_segmentation_prompt("测试文本", "natural", 8)
+        self.assertEqual(prompt.count("输入："), 4)
+        self.assertEqual(prompt.count("输出："), 3)
+
+    def test_model_path_link_not_split(self):
+        """验证模型分段路径中链接不会被括号拆开。"""
+        original = "看这个 [链接](https://example.com) 很酷。（点头）好的。"
+        model_output = "[链接](https://example.com) | （点头） | 好的。"
+        segments = parse_segments_from_model_output(
+            model_output,
+            fallback_text=original,
+            max_segments=12,
+            max_chars_per_segment=180,
+        )
+        self.assertTrue(any("[链接](https://example.com)" in seg for seg in segments))
+
 
 if __name__ == "__main__":
     unittest.main()
