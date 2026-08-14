@@ -4,6 +4,22 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.3.0] - 2026-08-14
+
+### Added
+- **全语法原子块保护**：单遍扫描并保护代码围栏、JSON、Markdown 表格/列表/引用、行内代码、链接/图片与短动作括号；块级原子块独立成段，行内原子块随文本打包但内部永不拆分。
+- **管道符前置掩码**：分段前把原文中的内联 `|` 替换为无歧义占位符，解析重建后回填，避免 Linux 管道命令、数学绝对值等与分段协议分隔符冲突。
+- **原子块与管道符回归测试**：覆盖 `>` 开头颜文字、行内链接/代码不切分、正文与受保护块穿插时的全局段数上限、长括号不拆段、管道符掩码还原与极简 Prompt few-shot 数量。
+
+### Changed
+- **分段 Prompt 重构**：重构并精简prompt，同时保留 3 条 few-shot 示例，降低小模型注意力稀释与复读风险。
+- **动作括号长度限制**：仅长度不超过 30 字符的括号动作独立成段，更长括号保持正文不拆。
+
+### Fixed
+- **修复 `>` 开头颜文字尖括号转义失效**：`>_<` 等颜文字不再被误判为 Markdown 引用，重新恢复 v1.0.2 的 QQ/微信尖括号吞噬防护。
+- **修复全局最大分段数失效**：正文与 JSON/代码/Markdown 块穿插时，`max_segments` 现在作为全局上限生效；同时修复中文段间被插入空格导致长度膨胀的问题。
+- **修复 heavy Markdown 清洗丢失链接 URL**：统一改为内容保全式正则清洗，`markdown-it`/`mdit_plain` 可用时不再丢弃链接 URL，保证宿主与容器环境行为一致。
+
 ## [1.2.2] - 2026-08-13
 
 ### Changed
@@ -127,3 +143,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 [1.2.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.2.0
 [1.2.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.2.1
 [1.2.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.2.2
+[1.3.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.0
