@@ -36,7 +36,6 @@ BRACKET_PAIRS: tuple[tuple[str, str], ...] = (
     ("【", "】"),
     ("[", "]"),
 )
-_MAX_ACTION_LEN = 30
 
 _LEFT_BOUNDARY_CHARS = frozenset("（([【“‘「『《")
 _LEADING_PUNCTUATION_RE = re.compile(
@@ -1009,11 +1008,6 @@ def split_text_at_brackets(text: str) -> list[str]:
             buffer.append(text[index:])
             index = len(text)
             break
-
-        if scan_index - index > _MAX_ACTION_LEN:
-            buffer.append(text[index:scan_index])
-            index = scan_index
-            continue
 
         if buffer:
             parts.append("".join(buffer))

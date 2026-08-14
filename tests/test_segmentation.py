@@ -536,11 +536,13 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         self.assertLessEqual(len(segments), 3)
         self.assertTrue(any(seg.strip().startswith("{") for seg in segments))
 
-    def test_long_bracket_not_split_as_action(self):
-        """验证超过 30 字符的括号不会被当作动作拆出。"""
+    def test_long_bracket_split_as_action(self):
+        """验证长动作括号也会独立成段，不会和台词粘在一起。"""
         long_text = "（" + "这是超过三十个字符的说明文字" * 3 + "）然后说话。"
         segments = local_fallback_split(long_text, 8, 180)
-        self.assertEqual(len(segments), 1)
+        self.assertEqual(len(segments), 2)
+        self.assertTrue(any(seg.startswith("（") and seg.endswith("）") for seg in segments))
+        self.assertTrue(any("然后说话" in seg for seg in segments))
 
     def test_pipe_mask_and_restore(self):
         """验证管道符前置掩码与还原。"""

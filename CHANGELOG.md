@@ -4,6 +4,11 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.3.1] - 2026-08-14
+
+### Fixed
+- **移除动作括号长度限制**：长动作括号（超过 30 字符）现在也会独立成段，不再与后续台词粘在一起。
+
 ## [1.3.0] - 2026-08-14
 
 ### Added
@@ -144,3 +149,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 [1.2.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.2.1
 [1.2.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.2.2
 [1.3.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.0
+[1.3.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.1
