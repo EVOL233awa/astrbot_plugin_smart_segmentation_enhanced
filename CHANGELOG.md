@@ -4,6 +4,14 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.3.2] - 2026-08-15
+
+### Fixed
+- **修复模型分段短句被重新合并**：模型已用 `|` 明确分出的短段不再被长度稳定阶段按目标字数重新打包，仅对超长段拆分、超过硬段数时合并。
+
+### Added
+- **模型管道符边界回归测试**：覆盖“动作 + 两句短回复”日志场景，确保 3 条模型分段原样保留。
+
 ## [1.3.1] - 2026-08-14
 
 ### Fixed
@@ -150,3 +158,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 [1.2.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.2.2
 [1.3.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.0
 [1.3.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.1
+[1.3.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.2
