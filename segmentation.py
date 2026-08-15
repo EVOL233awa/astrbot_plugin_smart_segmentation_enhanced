@@ -1183,7 +1183,7 @@ def stabilize_segment_lengths(
     max_segments: int | str = 0,
     max_chars_per_segment: int | str = 0,
 ) -> list[str]:
-    """拆分超长分段并重新应用最大分段数限制，稳定单条消息长度。"""
+    """拆分超长分段并重新应用最大分段数限制，保留模型已给出的边界。"""
     try:
         max_segs = int(max_segments) if max_segments is not None else 0
     except (ValueError, TypeError):
@@ -1214,11 +1214,6 @@ def stabilize_segment_lengths(
     if text_parts:
         runs.append(("text", text_parts))
 
-    target = compute_target_segment_length(
-        "".join(normalized),
-        max_segs,
-        max_chars,
-    )
     stabilized: list[str] = []
     for run_kind, parts in runs:
         if run_kind == "protected":
@@ -1232,14 +1227,7 @@ def stabilize_segment_lengths(
                 else:
                     split_parts.append(segment)
             parts = split_parts
-        stabilized.extend(
-            pack_segments_to_target(
-                parts,
-                target,
-                max_segments=max_segs,
-                max_chars_per_segment=max_chars,
-            )
-        )
+        stabilized.extend(parts)
     stabilized = _merge_to_global_max(stabilized, max_segs, max_chars)
     return stabilized
 

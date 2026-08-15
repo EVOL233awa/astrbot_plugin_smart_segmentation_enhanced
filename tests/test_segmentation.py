@@ -446,6 +446,31 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         )
         self.assertEqual(segments, ["（动作）", "……嗯。说话。"])
 
+    def test_model_pipe_boundaries_preserved_for_short_reply(self):
+        """验证模型已用管道符分出的短句不会被长度稳定阶段重新合并。"""
+        original = (
+            "（轻轻点头）输了就下号，是明智的决定。"
+            "1647 已经是很好的成绩了，老师，休息吧。"
+        )
+        model_output = (
+            "（轻轻点头） | 输了就下号，是明智的决定。 | "
+            "1647 已经是很好的成绩了，老师，休息吧。"
+        )
+        segments = parse_segments_from_model_output(
+            model_output,
+            fallback_text=original,
+            max_segments=12,
+            max_chars_per_segment=180,
+        )
+        self.assertEqual(
+            segments,
+            [
+                "（轻轻点头）",
+                "输了就下号，是明智的决定。",
+                "1647 已经是很好的成绩了，老师，休息吧。",
+            ],
+        )
+
     def test_ascii_ellipsis_leading_ownership(self):
         """验证 ASCII 省略号 ... 同样归属后面说话段。"""
         original = "（动作）\n\n...嗯。说话。"
