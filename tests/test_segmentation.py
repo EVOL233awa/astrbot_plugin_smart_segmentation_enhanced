@@ -605,6 +605,91 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         self.assertEqual(segments[0], "（叹气）")
         self.assertNotIn("（叹气）（", "".join(segments))
 
+    def test_real_log_leading_quote_and_ellipsis_ownership(self):
+        """验证真实日志中段首引号和省略号归后续段，不粘回前一段。"""
+        original = (
+            "（指尖轻抵唇边，翡翠绿瞳里漾开一层狡黠的笑意）\n\n"
+            "呵呵……老师，这么认真地追问，反而让花子有点招架不住了呢。\n\n"
+            '"什么都可以"——这句话的解读方式，可是比圣三一的藏书还要丰富哦？'
+            "不过，至少有一件事花子可以保证：无论老师问什么、想做什么，花子都不会对您有所保留。"
+            "无论是正经的话题……还是不正经的话题，只要是老师想听的，我都会坦诚相告呢。\n\n"
+            "……哎呀，老师的表情好像变得更危险了？"
+            "不过没关系，花子向来不介意陪老师一起，探索一些\"深入\"的话题呢。"
+        )
+        model_output = (
+            "（指尖轻抵唇边，翡翠绿瞳里漾开一层狡黠的笑意） | "
+            "呵呵……老师，这么认真地追问，反而让花子有点招架不住了呢。 | "
+            '"什么都可以"——这句话的解读方式，可是比圣三一的藏书还要丰富哦？ | '
+            "不过，至少有一件事花子可以保证：无论老师问什么、想做什么，花子都不会对您有所保留。 | "
+            "无论是正经的话题……还是不正经的话题，只要是老师想听的，我都会坦诚相告呢。 | "
+            "……哎呀，老师的表情好像变得更危险了？ | "
+            '不过没关系，花子向来不介意陪老师一起，探索一些"深入"的话题呢。'
+        )
+        segments = parse_segments_from_model_output(
+            model_output,
+            fallback_text=original,
+            max_segments=12,
+            max_chars_per_segment=180,
+        )
+        self.assertEqual(len(segments), 7)
+        self.assertEqual(
+            segments[2],
+            '"什么都可以"——这句话的解读方式，可是比圣三一的藏书还要丰富哦？',
+        )
+        self.assertEqual(segments[5], "……哎呀，老师的表情好像变得更危险了？")
+        self.assertFalse(any('\n\n"' in seg or seg.endswith("……") for seg in segments))
+
+    def test_paragraph_leading_punctuation_stays_with_next_segment(self):
+        """验证普通段首的引号、省略号和问叹号不会粘到前一段末尾。"""
+        cases = [
+            (
+                '第一句。\n\n"第二句开始了。"然后继续。',
+                '第一句。 | "第二句开始了。"然后继续。',
+                '"',
+            ),
+            (
+                "第一句。\n\n……第二句开始了。",
+                "第一句。 | ……第二句开始了。",
+                "……",
+            ),
+            (
+                "第一句。\n\n...第二句开始了。",
+                "第一句。 | ...第二句开始了。",
+                "...",
+            ),
+            (
+                "第一句。\n\n？！第二句开始了。",
+                "第一句。 | ？！第二句开始了。",
+                "？！",
+            ),
+        ]
+        for original, model_output, prefix in cases:
+            with self.subTest(prefix=prefix):
+                segments = parse_segments_from_model_output(
+                    model_output,
+                    fallback_text=original,
+                    max_segments=12,
+                    max_chars_per_segment=180,
+                )
+                self.assertEqual(segments[0], "第一句。")
+                self.assertTrue(segments[1].startswith(prefix))
+
+    def test_sentence_final_punctuation_not_moved_to_next_segment(self):
+        """验证非段首的句末省略号和句号不会被错误归属。"""
+        cases = [
+            ("他说...然后继续。", "他说... | 然后继续。", ["他说...", "然后继续。"]),
+            ("第一句。第二句。", "第一句。 | 第二句。", ["第一句。", "第二句。"]),
+        ]
+        for original, model_output, expected in cases:
+            with self.subTest(original=original):
+                segments = parse_segments_from_model_output(
+                    model_output,
+                    fallback_text=original,
+                    max_segments=12,
+                    max_chars_per_segment=180,
+                )
+                self.assertEqual(segments, expected)
+
     def test_split_function_and_code_comment_not_broken(self):
         """验证 split() 和代码围栏内注释不会被误切。"""
         segments = local_fallback_split("调用 split() 完成。", 0, 180)

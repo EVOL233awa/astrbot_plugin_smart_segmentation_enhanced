@@ -40,6 +40,7 @@ BRACKET_PAIRS: tuple[tuple[str, str], ...] = (
 _HARD_SENTENCE_END_CHARS = frozenset("！？!?")
 
 _LEFT_BOUNDARY_CHARS = frozenset("（([【“‘「『《")
+_SEGMENT_LEADING_PUNCT_CHARS = frozenset("…·~—–―〜？！。.")
 _LEADING_PUNCTUATION_RE = re.compile(
     r"^(?:…+|\.{2,}|·+|~+|—+|–+|―+|〜+|？+|！+|。{2,})+$"
 )
@@ -1147,6 +1148,42 @@ def _top_level_bracket_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+def _find_model_segment_start(original: str, raw_start: int) -> int:
+    """Locate the true start of a model segment, keeping leading punctuation with it."""
+    start = raw_start
+
+    punct_start = start
+    while punct_start > 0 and original[punct_start - 1] in _SEGMENT_LEADING_PUNCT_CHARS:
+        punct_start -= 1
+    leading_punct = original[punct_start:start]
+    if (
+        leading_punct
+        and _LEADING_PUNCTUATION_RE.match(leading_punct)
+        and (
+            punct_start == 0
+            or original[punct_start - 1].isspace()
+            or original[punct_start - 1] in _LEFT_BOUNDARY_CHARS
+        )
+    ):
+        start = punct_start
+
+    while start > 0 and original[start - 1].isspace():
+        start -= 1
+
+    if start > 0:
+        prev = original[start - 1]
+        if prev in _LEFT_BOUNDARY_CHARS:
+            start -= 1
+        elif prev in {'"', "'"}:
+            if (
+                start == 1
+                or original[start - 2].isspace()
+                or original[start - 2] in _LEFT_BOUNDARY_CHARS
+            ):
+                start -= 1
+    return start
+
+
 def reconstruct_segments_from_model_output(
     model_segments: list[str],
     original_text: str,
@@ -1189,12 +1226,7 @@ def reconstruct_segments_from_model_output(
     starts = [0]
     for i in range(1, len(matches)):
         raw_start = orig_positions[matches[i][0]]
-        start = raw_start
-        while start > 0 and (
-            original[start - 1].isspace()
-            or original[start - 1] in _LEFT_BOUNDARY_CHARS
-        ):
-            start -= 1
+        start = _find_model_segment_start(original, raw_start)
         starts.append(start)
 
     spans = _top_level_bracket_spans(original)
@@ -1463,9 +1495,10 @@ def parse_segments_from_model_output(
         if pending_leading:
             seg = pending_leading + seg
             pending_leading = ""
-        if final_merged and (
-            is_kaomoji_or_pure_punct(seg) or is_leading_punctuation(seg)
-        ):
+        if final_merged and is_leading_punctuation(seg):
+            pending_leading = seg
+            continue
+        if final_merged and is_kaomoji_or_pure_punct(seg):
             if is_action_only_text(final_merged[-1]):
                 pending_leading = seg
                 continue
