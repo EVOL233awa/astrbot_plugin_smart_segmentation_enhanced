@@ -4,6 +4,17 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.3.3] - 2026-08-16
+
+### Fixed
+- **修复跨行动作括号被切碎并与台词粘连**：本地切分改为先对整段文本做括号边界切分，再处理换行与句末标点，跨多行的 `（动作）` 现在整体独立成段。
+- **修复长动作被 `max_chars_per_segment` 硬切**：完整动作括号与 JSON/Markdown 块一样视为不可拆分，超长动作保持完整。
+- **修复模型在括号内插入管道符**：模型给出的 `|` 若落在括号内部，会按原文顶层括号区间重建边界，不再把动作片段与正常说话粘连。
+
+### Added
+- **本地切分新增问号/感叹号硬分段边界**：句末的 `？`、`！` 及其组合（如 `？！`）在本地打包阶段视为强制分条边界，不再因短句合并而粘在同一条消息中。
+- **括号原子性回归测试**：覆盖跨行动作、超长动作、模型括号内管道符、跨行动作括号，以及问号/感叹号硬分段场景。
+
 ## [1.3.2] - 2026-08-15
 
 ### Fixed
@@ -159,3 +170,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 [1.3.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.0
 [1.3.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.1
 [1.3.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.2
+[1.3.3]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.3
