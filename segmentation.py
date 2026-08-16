@@ -37,6 +37,8 @@ BRACKET_PAIRS: tuple[tuple[str, str], ...] = (
     ("[", "]"),
 )
 
+_HARD_SENTENCE_END_CHARS = frozenset("！？!?")
+
 _LEFT_BOUNDARY_CHARS = frozenset("（([【“‘「『《")
 _LEADING_PUNCTUATION_RE = re.compile(
     r"^(?:…+|\.{2,}|·+|~+|—+|–+|―+|〜+|？+|！+|。{2,})+$"
@@ -625,6 +627,10 @@ def pack_segments_to_target(
         if not current:
             current = segment
             continue
+        if _HARD_SENTENCE_END_CHARS.intersection(current.rstrip()[-4:]):
+            packed.append(current)
+            current = segment
+            continue
         candidate = _join_adjacent(current, segment, target)
         if len(candidate) <= target:
             current = candidate
@@ -731,19 +737,21 @@ def _restore_inline_atoms(text: str, atoms: list[str]) -> str:
 def _split_plain_text(text: str) -> list[str]:
     """Split ordinary text into atomic action/sentence parts."""
     masked_text, inline_atoms = _mask_inline_atoms(text)
-    lines = [line for line in masked_text.splitlines() if line.strip()]
+    bracket_parts = split_segments_at_bracket_boundaries(
+        [masked_text],
+        max_segments=0,
+    )
     expanded: list[str] = []
-    for line in lines:
-        expanded.extend(
-            split_segments_at_bracket_boundaries([line], max_segments=0)
-        )
-
-    sentence_parts: list[str] = []
-    for line in expanded:
-        sentence_parts.extend(_sentence_split_line(line))
+    for part in bracket_parts:
+        if is_action_only_text(part):
+            expanded.append(part)
+            continue
+        for line in part.splitlines():
+            if line.strip():
+                expanded.extend(_sentence_split_line(line))
 
     merged: list[str] = []
-    for part in sentence_parts:
+    for part in expanded:
         if merged and is_kaomoji_or_pure_punct(part):
             merged[-1] += part
         else:
@@ -1069,6 +1077,76 @@ def normalize_content_key(text: str) -> str:
     return "".join(char.lower() for char in cleaned if char.isalnum())
 
 
+def _masked_position_map(masked_text: str, atoms: list[str]) -> list[int]:
+    """Map masked inline-atom placeholders back to original character indexes."""
+    mapping: list[int] = []
+    original_index = 0
+    atom_index = 0
+    index = 0
+    while index < len(masked_text):
+        if masked_text.startswith("\x00A", index):
+            end = masked_text.find("\x00", index + 2)
+            if end == -1:
+                end = len(masked_text) - 1
+            atom_len = len(atoms[atom_index]) if atom_index < len(atoms) else 1
+            while index <= end:
+                mapping.append(original_index)
+                index += 1
+            original_index += atom_len
+            atom_index += 1
+        else:
+            mapping.append(original_index)
+            index += 1
+            original_index += 1
+    return mapping
+
+
+def _top_level_bracket_spans(text: str) -> list[tuple[int, int]]:
+    """Return outermost balanced bracket spans, ignoring inline atoms."""
+    masked_text, atoms = _mask_inline_atoms(text)
+    mapping = _masked_position_map(masked_text, atoms)
+    masked_spans: list[tuple[int, int]] = []
+    index = 0
+    while index < len(masked_text):
+        char = masked_text[index]
+        matched_pair: tuple[str, str] | None = None
+        for open_bracket, close_bracket in BRACKET_PAIRS:
+            if char == open_bracket:
+                if index > 0 and (
+                    is_ascii_alnum(masked_text[index - 1])
+                    or masked_text[index - 1] in "._"
+                ):
+                    break
+                matched_pair = (open_bracket, close_bracket)
+                break
+        if matched_pair is None:
+            index += 1
+            continue
+        open_bracket, close_bracket = matched_pair
+        depth = 1
+        scan_index = index + 1
+        while scan_index < len(masked_text) and depth > 0:
+            if masked_text[scan_index] == open_bracket:
+                depth += 1
+            elif masked_text[scan_index] == close_bracket:
+                depth -= 1
+            scan_index += 1
+        if depth == 0:
+            masked_spans.append((index, scan_index))
+            index = scan_index
+        else:
+            index += 1
+
+    spans: list[tuple[int, int]] = []
+    for start, end in masked_spans:
+        orig_start = mapping[start]
+        orig_end = mapping[end - 1] + 1
+        if spans and orig_start < spans[-1][1]:
+            continue
+        spans.append((orig_start, orig_end))
+    return spans
+
+
 def reconstruct_segments_from_model_output(
     model_segments: list[str],
     original_text: str,
@@ -1119,10 +1197,30 @@ def reconstruct_segments_from_model_output(
             start -= 1
         starts.append(start)
 
+    spans = _top_level_bracket_spans(original)
+    protected_starts = [0]
+    for start in starts[1:]:
+        if any(span_start < start < span_end for span_start, span_end in spans):
+            continue
+        protected_starts.append(start)
+
+    bounds = set(protected_starts)
+    for span_start, span_end in spans:
+        bounds.add(span_start)
+        bounds.add(span_end)
+    ordered_bounds = sorted(bounds)
+
     segments = []
-    for i, start in enumerate(starts):
-        end = starts[i + 1] if i + 1 < len(starts) else len(original)
+    for i in range(len(ordered_bounds) - 1):
+        start = ordered_bounds[i]
+        end = ordered_bounds[i + 1]
+        if start >= end:
+            continue
         part = original[start:end].strip()
+        if part:
+            segments.append(part)
+    if ordered_bounds and ordered_bounds[-1] < len(original):
+        part = original[ordered_bounds[-1]:].strip()
         if part:
             segments.append(part)
 
@@ -1138,7 +1236,11 @@ def _is_unsplittable_segment(segment: str) -> bool:
     stripped = str(segment or "").strip()
     if not stripped:
         return True
-    return is_non_natural_language(stripped) or is_markdown_document(stripped)
+    return (
+        is_action_only_text(stripped)
+        or is_non_natural_language(stripped)
+        or is_markdown_document(stripped)
+    )
 
 
 def _hard_split_overlong(segment: str, max_chars: int) -> list[str]:
@@ -1257,7 +1359,7 @@ def restore_pipe_in_segments(segments: list[str], placeholder: str) -> list[str]
 def build_segmentation_prompt(text: str, style: str, max_segments: int) -> str:
     """构建极简分段提示词，保留 3 条 few-shot 示例锁定输出格式。"""
     style_guide = STYLE_GUIDES.get(style, STYLE_GUIDES["natural"])
-    return f"""把输入拆成适合聊天分条的消息。不总结、不删字、不改标点，每条用 " | " 分隔。圆括号动作单独一条。以。！？结尾的完整句子之间必须拆开。最多 {max_segments} 条。风格：{style_guide}
+    return f"""把输入拆成适合聊天分条的消息。不总结、不删字、不改标点，每条用 " | " 分隔。圆括号动作单独一条，括号内即使跨行或超长也禁止插入分隔符。以。！？结尾的完整句子之间必须拆开。最多 {max_segments} 条。风格：{style_guide}
 
 示例：
 输入：（开心）今天发工资了，要不要一起去吃大餐？

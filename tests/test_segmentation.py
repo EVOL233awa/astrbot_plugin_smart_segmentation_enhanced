@@ -471,6 +471,95 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
             ],
         )
 
+    def test_local_fallback_preserves_multiline_action_bracket(self):
+        """验证跨多行的动作括号在本地切分时整体独立成段。"""
+        original = (
+            "（看到老师已经坐在沙发上，小桃的猫耳耳机\"嗡\"地发烫，"
+            "尾巴紧张地卷成弹簧，\n"
+            "站在沙发前深呼吸了整整三次，才迈着发软的小腿走过去）\n\n"
+            "……第、第一镜，开拍！"
+        )
+        segments = local_fallback_split(original, 12, 180)
+        self.assertEqual(len(segments), 2)
+        self.assertTrue(segments[0].startswith("（") and segments[0].endswith("）"))
+        self.assertEqual(segments[1], "……第、第一镜，开拍！")
+
+    def test_local_fallback_long_action_is_not_fragmented(self):
+        """验证超长动作括号不会被 max_chars 切成碎片。"""
+        original = "（" + "很长的动作描写" * 30 + "）然后老师轻轻开口说话。"
+        segments = local_fallback_split(original, 12, 80)
+        self.assertEqual(len(segments), 2)
+        self.assertTrue(segments[0].startswith("（") and segments[0].endswith("）"))
+        self.assertIn("然后老师轻轻开口说话", segments[1])
+
+    def test_stabilize_segment_lengths_keeps_action_atomic(self):
+        """验证长度稳定阶段不会拆分完整动作括号。"""
+        long_action = "（" + "很长" * 80 + "）"
+        stabilized = stabilize_segment_lengths(
+            [long_action],
+            max_segments=12,
+            max_chars_per_segment=80,
+        )
+        self.assertEqual(stabilized, [long_action])
+
+    def test_model_pipe_inside_bracket_is_repaired(self):
+        """验证模型在括号内部插入管道符时仍重建为完整动作段。"""
+        original = (
+            "（被老师轻轻拥入怀中，小桃僵住，猫耳耳机贴住耳朵）"
+            "呜……等一下！"
+        )
+        model_output = (
+            "（被老师轻轻拥入怀中，小桃僵住，| 猫耳耳机贴住耳朵） | "
+            "呜……等一下！"
+        )
+        segments = parse_segments_from_model_output(
+            model_output,
+            fallback_text=original,
+            max_segments=12,
+            max_chars_per_segment=180,
+        )
+        self.assertEqual(
+            segments,
+            [
+                "（被老师轻轻拥入怀中，小桃僵住，猫耳耳机贴住耳朵）",
+                "呜……等一下！",
+            ],
+        )
+
+    def test_model_pipe_inside_multiline_bracket_is_repaired(self):
+        """验证模型切碎跨行动作括号时仍按原文恢复完整动作。"""
+        original = (
+            "（\"R18\"三个字砸下来的瞬间，猫耳耳机\"啪\"地一下竖得笔直，\n"
+            "整个人像被定身术击中一样僵在原地，豆豆眼疯狂旋转）\n\n"
+            "……诶？诶诶诶诶——？！"
+        )
+        model_output = (
+            "（\"R18\"三个字砸下来的瞬间，猫耳耳机\"啪\"地一下竖得笔直， |\n"
+            "整个人像被定身术击中一样僵在原地，豆豆眼疯狂旋转） |\n"
+            "……诶？诶诶诶诶——？！"
+        )
+        segments = parse_segments_from_model_output(
+            model_output,
+            fallback_text=original,
+            max_segments=12,
+            max_chars_per_segment=180,
+        )
+        self.assertEqual(len(segments), 3)
+        self.assertTrue(segments[0].startswith("（") and segments[0].endswith("）"))
+        self.assertEqual(segments[1], "……诶？")
+        self.assertEqual(segments[2], "诶诶诶诶——？！")
+
+    def test_question_exclamation_marks_allow_hard_split(self):
+        """验证？！/！/？可以成为本地打包阶段的硬分段边界。"""
+        self.assertEqual(
+            local_fallback_split("真的吗？！然后呢。", 12, 180),
+            ["真的吗？！", "然后呢。"],
+        )
+        self.assertEqual(
+            local_fallback_split("第一句！第二句？", 12, 180),
+            ["第一句！", "第二句？"],
+        )
+
     def test_ascii_ellipsis_leading_ownership(self):
         """验证 ASCII 省略号 ... 同样归属后面说话段。"""
         original = "（动作）\n\n...嗯。说话。"
@@ -583,6 +672,7 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         prompt = build_segmentation_prompt("测试文本", "natural", 8)
         self.assertEqual(prompt.count("输入："), 4)
         self.assertEqual(prompt.count("输出："), 3)
+        self.assertIn("禁止插入分隔符", prompt)
 
     def test_model_path_link_not_split(self):
         """验证模型分段路径中链接不会被括号拆开。"""
