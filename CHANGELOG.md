@@ -4,6 +4,15 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.3.4] - 2026-08-16
+
+### Fixed
+- **修复模型分段段首标点被粘回前一段**：重建模型分段边界时，普通段落开头的 ASCII/全角引号、中文/ASCII 省略号、`？！` 等前导标点现在归属后续内容段，不再出现 `\n\n"`、`\n\n……` 等尾部残留。
+- **修复本地补切产生的纯前导标点被粘回普通前段**：前导标点暂存规则从仅动作段后扩展为普通段之间同样生效，确保标点随后续内容发送。
+
+### Added
+- **新增前导标点归属回归测试套件**：覆盖真实会话日志中的段首引号与省略号场景，并扩展至普通段首的 ASCII/全角引号、中文与 ASCII 省略号、问号感叹号组合，以及句末省略号/句号不被误移的边界用例。
+
 ## [1.3.3] - 2026-08-16
 
 ### Fixed
