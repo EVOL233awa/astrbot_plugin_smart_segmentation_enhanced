@@ -4,6 +4,17 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.3.5] - 2026-08-18
+
+### Fixed
+- **修复模型用空行分隔的完整句子被重新合并**：模型漏切时若用空行 `\n\n` 而非 `|` 分隔完整句子，补切阶段现在会保留段落边界，不再把两句粘回同一条消息。
+
+### Changed
+- **目标长度改为按实际句长动态计算**：代码层目标长度从固定公式改为基于原子句平均长度动态推导，短句切得短、长句保持完整，同时仍受 `max_segments` 硬上限约束。
+
+### Added
+- **新增动态目标长度与段落边界回归测试**：覆盖真实日志中空行分隔句子不粘连、短句不粘连、长句不硬切、混合长短句以及 `max_segments` 上限场景。
+
 ## [1.3.4] - 2026-08-16
 
 ### Fixed
