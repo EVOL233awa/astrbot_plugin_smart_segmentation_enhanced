@@ -478,6 +478,7 @@ def compute_target_segment_length(
     text: str,
     max_segments: int | str = 0,
     max_chars_per_segment: int | str = 0,
+    sentence_lengths: list[int] | None = None,
 ) -> int:
     """Compute the code-layer target length for ordinary chat segments."""
     try:
@@ -494,7 +495,12 @@ def compute_target_segment_length(
         max_chars = 0
 
     total = len(str(text or ""))
-    target = max(90 + round(total * 0.06), 100)
+    if sentence_lengths:
+        avg = sum(sentence_lengths) / len(sentence_lengths)
+        target = round(avg * 1.5)
+    else:
+        target = max(90 + round(total * 0.06), 100)
+    target = max(target, 20)
     if max_segs > 0:
         target = max(target, math.ceil(total / max_segs))
     if max_chars > 0:
@@ -1537,11 +1543,16 @@ def expand_under_split_natural_segments(
         ):
             expanded.append(segment)
             continue
-        local_segments = local_fallback_split(segment, 0)
-        if len(local_segments) > 1:
-            expanded.extend(local_segments)
-        else:
-            expanded.append(segment)
+        paragraphs = re.split(r"\n\s*\n", segment)
+        for paragraph in paragraphs:
+            paragraph = paragraph.strip()
+            if not paragraph:
+                continue
+            local_segments = local_fallback_split(paragraph, 0)
+            if len(local_segments) > 1:
+                expanded.extend(local_segments)
+            else:
+                expanded.append(paragraph)
     return normalize_segments(expanded, max_segments=0)
 
 
@@ -1594,9 +1605,12 @@ def local_fallback_split(
 
     runs: list[tuple[str, list[str]]] = []
     text_parts: list[str] = []
+    all_text_parts: list[str] = []
     for kind, chunk in split_protected_blocks(cleaned):
         if kind == "text":
-            text_parts.extend(_split_plain_text(chunk))
+            parts = _split_plain_text(chunk)
+            text_parts.extend(parts)
+            all_text_parts.extend(parts)
         else:
             if text_parts:
                 runs.append(("text", text_parts))
@@ -1605,7 +1619,13 @@ def local_fallback_split(
     if text_parts:
         runs.append(("text", text_parts))
 
-    target = compute_target_segment_length(cleaned, max_segments, max_chars)
+    sentence_lengths = [len(part) for part in all_text_parts if part.strip()]
+    target = compute_target_segment_length(
+        cleaned,
+        max_segments,
+        max_chars,
+        sentence_lengths=sentence_lengths,
+    )
     packed: list[str] = []
     for run_kind, parts in runs:
         if run_kind == "protected":

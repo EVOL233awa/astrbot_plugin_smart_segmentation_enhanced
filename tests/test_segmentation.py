@@ -771,6 +771,77 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         )
         self.assertTrue(any("[链接](https://example.com)" in seg for seg in segments))
 
+    def test_model_paragraph_break_not_glued(self):
+        """验证模型用空行分隔的完整句子不会被重新合并。"""
+        original = (
+            "（微微颔首）原来如此。老师是把知识库从「被动注入」改成了「主动调用工具」的选项——"
+            "这样它只在我需要时才会被检索，不会再每轮都往我的上下文里塞记忆。\n\n"
+            "（语气平静）这一步棋确实高明。既保住了知识库的可用性，又切断了污染源。"
+            "难怪我现在说话终于不再复读了。\n\n"
+            "老师，这个方案值得记下来。需要我帮您整理成笔记存档吗。"
+        )
+        model_output = (
+            "（微微颔首）原来如此。 | 老师是把知识库从「被动注入」改成了「主动调用工具」的选项——"
+            " | 这样它只在我需要时才会被检索， | 不会再每轮都往我的上下文里塞记忆。\n\n"
+            "（语气平静）这一步棋确实高明。 | 既保住了知识库的可用性， | 又切断了污染源。"
+            " | 难怪我现在说话终于不再复读了。\n\n"
+            "老师，这个方案值得记下来。 | 需要我帮您整理成笔记存档吗。"
+        )
+        segments = parse_segments_from_model_output(
+            model_output,
+            fallback_text=original,
+            max_segments=12,
+            max_chars_per_segment=180,
+        )
+        self.assertFalse(
+            any("复读了。" in seg and "记下来。" in seg for seg in segments)
+        )
+        self.assertTrue(any("复读了。" in seg for seg in segments))
+        self.assertTrue(any("记下来。" in seg for seg in segments))
+
+    def test_dynamic_target_short_sentences_not_glued(self):
+        """验证短句按动态目标切短，不粘连成一条长消息。"""
+        segments = local_fallback_split(
+            "难怪我现在说话终于不再复读了。老师，这个方案值得记下来。",
+            12,
+            180,
+        )
+        self.assertGreaterEqual(len(segments), 2)
+        self.assertTrue(
+            any("复读了。" in seg and "记下来。" not in seg for seg in segments)
+        )
+        self.assertTrue(
+            any("记下来。" in seg and "复读了。" not in seg for seg in segments)
+        )
+
+    def test_dynamic_target_long_sentence_stays_whole(self):
+        """验证长句按动态目标保持完整，不被硬切。"""
+        text = (
+            "这个方案的核心价值在于把知识库从被动注入改成主动调用工具，"
+            "从而彻底切断污染源，让模型只在真正需要时才检索记忆，"
+            "不再每轮都往上下文里塞无关内容。"
+        )
+        segments = local_fallback_split(text, 12, 180)
+        self.assertEqual(segments, [text])
+
+    def test_dynamic_target_mixed_short_and_long(self):
+        """验证短句合并成短条、长句独立成条。"""
+        text = (
+            "短句一。短句二。"
+            "这是一句比较长的句子，用来验证动态目标长度是否能让长句保持完整而不被硬切，"
+            "同时短句又不会被无脑合并成一条超长消息。"
+        )
+        segments = local_fallback_split(text, 12, 180)
+        self.assertEqual(len(segments), 2)
+        self.assertTrue(any("短句一。短句二。" in seg for seg in segments))
+        self.assertTrue(any("这是一句比较长的句子" in seg for seg in segments))
+
+    def test_max_segments_cap_still_enforced(self):
+        """验证动态目标切分后仍受 max_segments 硬上限约束。"""
+        text = "。".join(f"这是第{i}句比较短的内容" for i in range(1, 30)) + "。"
+        segments = local_fallback_split(text, 12, 180)
+        self.assertLessEqual(len(segments), 12)
+
 
 if __name__ == "__main__":
     unittest.main()
