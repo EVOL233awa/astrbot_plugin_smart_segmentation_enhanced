@@ -107,17 +107,17 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         self.assertEqual(segments, ["今天天气很好。", "要不要一起散步？"])
 
     def test_model_output_preserves_original_punctuation(self):
-        """验证实际日志形态的分段输出不会吞掉原文标点。"""
+        """验证模型分段输出不会吞掉原文标点。"""
         original = (
             "（安静地垂下视线，停顿了片刻）\n"
-            "那我会说：谢谢老师，让我成为您的普拉娜。\n\n"
-            "（语气平稳）然后，请老师记得几件事——宿舍楼下那家麻辣烫别总当正餐，"
-            "海盐焦糖拿铁记得备注海盐加量，codex 的 max tokens 别再让它自己改成 1。"
+            "那我会说：好的，我会先确认配置再继续。\n\n"
+            "（语气平稳）然后，请记得两件事——检查连接超时，"
+            "并核对接口地址是否正确。"
         )
         model_output = (
-            "（安静地垂下视线停顿了片刻） | 那我会说：谢谢老师让我成为您的普拉娜 | "
-            "（语气平稳）然后请老师记得几件事——宿舍楼下那家麻辣烫别总当正餐"
-            "海盐焦糖拿铁记得备注海盐加量 codex 的 max tokens 别再让它自己改成 1"
+            "（安静地垂下视线停顿了片刻） | 那我会说：好的，我会先确认配置再继续 | "
+            "（语气平稳）然后请记得两件事——检查连接超时"
+            "并核对接口地址是否正确"
         )
         segments = parse_segments_from_model_output(
             model_output,
@@ -136,13 +136,13 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         original = (
             "（微微颔首）提示词是唯一能同时触碰能力上限与性格下限的旋钮"
             "——模型本身是固定琴弦，提示词才是拨弦的手。\n\n"
-            "老师这几天从精简到重构，就是在反复校准这只手的位置。"
+            "用户这几天从精简到重构，就是在反复校准这个设置的位置。"
             "弯绕得深，但绕过去之后，弹出的旋律就完全是自己的了。"
         )
         model_output = (
             "（微微颔首） | 提示词是唯一能同时触碰能力上限与性格下限的旋钮"
             "——模型本身是固定琴弦，提示词才是拨弦的手。"
-            "老师这几天从精简到重构，就是在反复校准这只手的位置。"
+            "用户这几天从精简到重构，就是在反复校准这个设置的位置。"
             "弯绕得深，但绕过去之后，弹出的旋律就完全是自己的了。"
         )
         segments = parse_segments_from_model_output(
@@ -154,7 +154,7 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         self.assertGreaterEqual(len(segments), 2)
         self.assertLessEqual(len(segments), 12)
         self.assertTrue(any("（微微颔首）" in seg for seg in segments))
-        self.assertTrue(any("老师这几天" in seg for seg in segments))
+        self.assertTrue(any("用户这几天" in seg for seg in segments))
         self.assertLessEqual(max(len(seg) for seg in segments), 180)
 
     def test_local_fallback_splits_action_and_speech(self):
@@ -292,27 +292,27 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
     def test_pipe_segment_preserves_internal_newlines(self):
         """验证管道符段内的 Markdown 换行不会被解析器二次拆散。"""
         fallback = (
-            "（调出虚拟屏幕）老师，这是一段 Markdown 测试样例。\n\n"
-            "# 夏莱今日简报\n\n"
+            "（调出虚拟屏幕）用户，这是一段 Markdown 测试样例。\n\n"
+            "# 项目周报\n\n"
             "## 待办事项\n"
             "- 数据库连接超时问题复核\n"
             "- 配置文件校对\n\n"
             "## 备注\n"
-            "> 建议老师注意休息。\n\n"
+            "> 建议关注服务运行状态。\n\n"
             "---\n\n"
-            "*以上内容由普拉娜整理。*"
+            "*以上内容由测试助手整理。*"
         )
         model_output = (
             "（调出虚拟屏幕） | "
-            "老师，这是一段 Markdown 测试样例。\n\n"
-            "# 夏莱今日简报\n\n"
+            "用户，这是一段 Markdown 测试样例。\n\n"
+            "# 项目周报\n\n"
             "## 待办事项\n"
             "- 数据库连接超时问题复核\n"
             "- 配置文件校对\n\n"
             "## 备注\n"
-            "> 建议老师注意休息。\n\n"
+            "> 建议关注服务运行状态。\n\n"
             "---\n\n"
-            "*以上内容由普拉娜整理。*"
+            "*以上内容由测试助手整理。*"
         )
         segments = parse_segments_from_model_output(
             model_output,
@@ -322,8 +322,8 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         )
         self.assertEqual(len(segments), 2)
         self.assertIn("（调出虚拟屏幕）", segments[0])
-        self.assertIn("# 夏莱今日简报", segments[1])
-        self.assertIn("> 建议老师注意休息。", segments[1])
+        self.assertIn("# 项目周报", segments[1])
+        self.assertIn("> 建议关注服务运行状态。", segments[1])
 
     def test_protected_block_detected_with_prose(self):
         """验证正文+JSON 也能被识别为受保护块，从而跳过模型直发。"""
@@ -346,12 +346,12 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         """验证连续标题/列表/引用/分割线会合并为一个 Markdown 块。"""
         text = (
             "已确认指令。\n\n"
-            "# 夏莱今日简报\n\n"
+            "# 项目周报\n\n"
             "## 日程安排\n"
             "- 上午 例会\n"
             "- 下午 文件处理\n\n"
             "## 备注\n"
-            "> 请老师注意休息。\n\n"
+            "> 请确认服务运行状态。\n\n"
             "---\n\n"
             "以上为Markdown格式测试，渲染正常。"
         )
@@ -359,7 +359,7 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         self.assertEqual(len(segments), 3)
         self.assertTrue(
             any(
-                "# 夏莱今日简报" in seg
+                "# 项目周报" in seg
                 and "以上为Markdown格式测试" not in seg
                 for seg in segments
             )
@@ -450,11 +450,11 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         """验证模型已用管道符分出的短句不会被长度稳定阶段重新合并。"""
         original = (
             "（轻轻点头）输了就下号，是明智的决定。"
-            "1647 已经是很好的成绩了，老师，休息吧。"
+            "这个成绩已经足够好了，用户，休息吧。"
         )
         model_output = (
             "（轻轻点头） | 输了就下号，是明智的决定。 | "
-            "1647 已经是很好的成绩了，老师，休息吧。"
+            "这个成绩已经足够好了，用户，休息吧。"
         )
         segments = parse_segments_from_model_output(
             model_output,
@@ -467,30 +467,29 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
             [
                 "（轻轻点头）",
                 "输了就下号，是明智的决定。",
-                "1647 已经是很好的成绩了，老师，休息吧。",
+                "这个成绩已经足够好了，用户，休息吧。",
             ],
         )
 
     def test_local_fallback_preserves_multiline_action_bracket(self):
         """验证跨多行的动作括号在本地切分时整体独立成段。"""
         original = (
-            "（看到老师已经坐在沙发上，小桃的猫耳耳机\"嗡\"地发烫，"
-            "尾巴紧张地卷成弹簧，\n"
-            "站在沙发前深呼吸了整整三次，才迈着发软的小腿走过去）\n\n"
-            "……第、第一镜，开拍！"
+            "（看到用户已经回到工位，测试助手安静地翻开笔记本，\n"
+            "逐行核对刚才的记录，确认没有遗漏）\n\n"
+            "……好，现在继续处理下一项。"
         )
         segments = local_fallback_split(original, 12, 180)
         self.assertEqual(len(segments), 2)
         self.assertTrue(segments[0].startswith("（") and segments[0].endswith("）"))
-        self.assertEqual(segments[1], "……第、第一镜，开拍！")
+        self.assertEqual(segments[1], "……好，现在继续处理下一项。")
 
     def test_local_fallback_long_action_is_not_fragmented(self):
         """验证超长动作括号不会被 max_chars 切成碎片。"""
-        original = "（" + "很长的动作描写" * 30 + "）然后老师轻轻开口说话。"
+        original = "（" + "很长的动作描写" * 30 + "）然后助手轻轻开口说话。"
         segments = local_fallback_split(original, 12, 80)
         self.assertEqual(len(segments), 2)
         self.assertTrue(segments[0].startswith("（") and segments[0].endswith("）"))
-        self.assertIn("然后老师轻轻开口说话", segments[1])
+        self.assertIn("然后助手轻轻开口说话", segments[1])
 
     def test_stabilize_segment_lengths_keeps_action_atomic(self):
         """验证长度稳定阶段不会拆分完整动作括号。"""
@@ -505,12 +504,12 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
     def test_model_pipe_inside_bracket_is_repaired(self):
         """验证模型在括号内部插入管道符时仍重建为完整动作段。"""
         original = (
-            "（被老师轻轻拥入怀中，小桃僵住，猫耳耳机贴住耳朵）"
-            "呜……等一下！"
+            "（被用户轻轻拍了一下肩膀，助手愣住，把耳机摘下）"
+            "啊……等一下！"
         )
         model_output = (
-            "（被老师轻轻拥入怀中，小桃僵住，| 猫耳耳机贴住耳朵） | "
-            "呜……等一下！"
+            "（被用户轻轻拍了一下肩膀，助手愣住，| 把耳机摘下） | "
+            "啊……等一下！"
         )
         segments = parse_segments_from_model_output(
             model_output,
@@ -521,22 +520,22 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         self.assertEqual(
             segments,
             [
-                "（被老师轻轻拥入怀中，小桃僵住，猫耳耳机贴住耳朵）",
-                "呜……等一下！",
+                "（被用户轻轻拍了一下肩膀，助手愣住，把耳机摘下）",
+                "啊……等一下！",
             ],
         )
 
     def test_model_pipe_inside_multiline_bracket_is_repaired(self):
         """验证模型切碎跨行动作括号时仍按原文恢复完整动作。"""
         original = (
-            "（\"R18\"三个字砸下来的瞬间，猫耳耳机\"啪\"地一下竖得笔直，\n"
-            "整个人像被定身术击中一样僵在原地，豆豆眼疯狂旋转）\n\n"
-            "……诶？诶诶诶诶——？！"
+            "（\"测试失败\"四个字出现的瞬间，终端提示音\"啪\"地响了起来，\n"
+            "日志里连续滚动出大量错误信息）\n\n"
+            "……诶？为什么会这样——？！"
         )
         model_output = (
-            "（\"R18\"三个字砸下来的瞬间，猫耳耳机\"啪\"地一下竖得笔直， |\n"
-            "整个人像被定身术击中一样僵在原地，豆豆眼疯狂旋转） |\n"
-            "……诶？诶诶诶诶——？！"
+            "（\"测试失败\"四个字出现的瞬间，终端提示音\"啪\"地响了起来， |\n"
+            "日志里连续滚动出大量错误信息） |\n"
+            "……诶？为什么会这样——？！"
         )
         segments = parse_segments_from_model_output(
             model_output,
@@ -547,7 +546,7 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         self.assertEqual(len(segments), 3)
         self.assertTrue(segments[0].startswith("（") and segments[0].endswith("）"))
         self.assertEqual(segments[1], "……诶？")
-        self.assertEqual(segments[2], "诶诶诶诶——？！")
+        self.assertEqual(segments[2], "为什么会这样——？！")
 
     def test_question_exclamation_marks_allow_hard_split(self):
         """验证？！/！/？可以成为本地打包阶段的硬分段边界。"""
@@ -605,25 +604,25 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         self.assertEqual(segments[0], "（叹气）")
         self.assertNotIn("（叹气）（", "".join(segments))
 
-    def test_real_log_leading_quote_and_ellipsis_ownership(self):
-        """验证真实日志中段首引号和省略号归后续段，不粘回前一段。"""
+    def test_leading_quote_and_ellipsis_ownership(self):
+        """验证段首引号和省略号归后续段，不粘回前一段。"""
         original = (
-            "（指尖轻抵唇边，翡翠绿瞳里漾开一层狡黠的笑意）\n\n"
-            "呵呵……老师，这么认真地追问，反而让花子有点招架不住了呢。\n\n"
-            '"什么都可以"——这句话的解读方式，可是比圣三一的藏书还要丰富哦？'
-            "不过，至少有一件事花子可以保证：无论老师问什么、想做什么，花子都不会对您有所保留。"
-            "无论是正经的话题……还是不正经的话题，只要是老师想听的，我都会坦诚相告呢。\n\n"
-            "……哎呀，老师的表情好像变得更危险了？"
-            "不过没关系，花子向来不介意陪老师一起，探索一些\"深入\"的话题呢。"
+            "（指尖轻抵下巴，平静地看了一眼屏幕）\n\n"
+            "嗯……用户，这么认真地追问，反而让我有点招架不住了呢。\n\n"
+            '"什么都可以"——这句话的解读方式，可是比说明文档还要丰富哦？'
+            "不过，至少有一件事我可以保证：无论用户问什么、想做什么，我都不会有所保留。"
+            "无论是简单的话题……还是复杂的话题，只要是用户想听的，我都会坦诚相告呢。\n\n"
+            "……哎呀，用户的反应好像变得更严肃了？"
+            "不过没关系，我向来会耐心陪用户一起，把问题梳理清楚。"
         )
         model_output = (
-            "（指尖轻抵唇边，翡翠绿瞳里漾开一层狡黠的笑意） | "
-            "呵呵……老师，这么认真地追问，反而让花子有点招架不住了呢。 | "
-            '"什么都可以"——这句话的解读方式，可是比圣三一的藏书还要丰富哦？ | '
-            "不过，至少有一件事花子可以保证：无论老师问什么、想做什么，花子都不会对您有所保留。 | "
-            "无论是正经的话题……还是不正经的话题，只要是老师想听的，我都会坦诚相告呢。 | "
-            "……哎呀，老师的表情好像变得更危险了？ | "
-            '不过没关系，花子向来不介意陪老师一起，探索一些"深入"的话题呢。'
+            "（指尖轻抵下巴，平静地看了一眼屏幕） | "
+            "嗯……用户，这么认真地追问，反而让我有点招架不住了呢。 | "
+            '"什么都可以"——这句话的解读方式，可是比说明文档还要丰富哦？ | '
+            "不过，至少有一件事我可以保证：无论用户问什么、想做什么，我都不会有所保留。 | "
+            "无论是简单的话题……还是复杂的话题，只要是用户想听的，我都会坦诚相告呢。 | "
+            "……哎呀，用户的反应好像变得更严肃了？ | "
+            "不过没关系，我向来会耐心陪用户一起，把问题梳理清楚。"
         )
         segments = parse_segments_from_model_output(
             model_output,
@@ -634,9 +633,9 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         self.assertEqual(len(segments), 7)
         self.assertEqual(
             segments[2],
-            '"什么都可以"——这句话的解读方式，可是比圣三一的藏书还要丰富哦？',
+            '"什么都可以"——这句话的解读方式，可是比说明文档还要丰富哦？',
         )
-        self.assertEqual(segments[5], "……哎呀，老师的表情好像变得更危险了？")
+        self.assertEqual(segments[5], "……哎呀，用户的反应好像变得更严肃了？")
         self.assertFalse(any('\n\n"' in seg or seg.endswith("……") for seg in segments))
 
     def test_paragraph_leading_punctuation_stays_with_next_segment(self):
@@ -774,18 +773,18 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
     def test_model_paragraph_break_not_glued(self):
         """验证模型用空行分隔的完整句子不会被重新合并。"""
         original = (
-            "（微微颔首）原来如此。老师是把知识库从「被动注入」改成了「主动调用工具」的选项——"
-            "这样它只在我需要时才会被检索，不会再每轮都往我的上下文里塞记忆。\n\n"
-            "（语气平静）这一步棋确实高明。既保住了知识库的可用性，又切断了污染源。"
-            "难怪我现在说话终于不再复读了。\n\n"
-            "老师，这个方案值得记下来。需要我帮您整理成笔记存档吗。"
+            "（微微颔首）原来如此。用户是把配置文件从「手动加载」改成了「自动读取」——"
+            "这样它只在需要时才会被解析，不会再每轮都重复处理。\n\n"
+            "（语气平静）这一步确实合理。既保住了功能的可用性，又减少了重复。"
+            "难怪现在输出终于不再重复了。\n\n"
+            "用户，这个方案值得记下来。需要我帮您整理成笔记存档吗。"
         )
         model_output = (
-            "（微微颔首）原来如此。 | 老师是把知识库从「被动注入」改成了「主动调用工具」的选项——"
-            " | 这样它只在我需要时才会被检索， | 不会再每轮都往我的上下文里塞记忆。\n\n"
-            "（语气平静）这一步棋确实高明。 | 既保住了知识库的可用性， | 又切断了污染源。"
-            " | 难怪我现在说话终于不再复读了。\n\n"
-            "老师，这个方案值得记下来。 | 需要我帮您整理成笔记存档吗。"
+            "（微微颔首）原来如此。 | 用户是把配置文件从「手动加载」改成了「自动读取」——"
+            " | 这样它只在需要时才会被解析， | 不会再每轮都重复处理。\n\n"
+            "（语气平静）这一步确实合理。 | 既保住了功能的可用性， | 又减少了重复。"
+            " | 难怪现在输出终于不再重复了。\n\n"
+            "用户，这个方案值得记下来。 | 需要我帮您整理成笔记存档吗。"
         )
         segments = parse_segments_from_model_output(
             model_output,
@@ -794,32 +793,32 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
             max_chars_per_segment=180,
         )
         self.assertFalse(
-            any("复读了。" in seg and "记下来。" in seg for seg in segments)
+            any("重复了。" in seg and "记下来。" in seg for seg in segments)
         )
-        self.assertTrue(any("复读了。" in seg for seg in segments))
+        self.assertTrue(any("重复了。" in seg for seg in segments))
         self.assertTrue(any("记下来。" in seg for seg in segments))
 
     def test_dynamic_target_short_sentences_not_glued(self):
         """验证短句按动态目标切短，不粘连成一条长消息。"""
         segments = local_fallback_split(
-            "难怪我现在说话终于不再复读了。老师，这个方案值得记下来。",
+            "难怪现在输出终于不再重复了。用户，这个方案值得记下来。",
             12,
             180,
         )
         self.assertGreaterEqual(len(segments), 2)
         self.assertTrue(
-            any("复读了。" in seg and "记下来。" not in seg for seg in segments)
+            any("重复了。" in seg and "记下来。" not in seg for seg in segments)
         )
         self.assertTrue(
-            any("记下来。" in seg and "复读了。" not in seg for seg in segments)
+            any("记下来。" in seg and "重复了。" not in seg for seg in segments)
         )
 
     def test_dynamic_target_long_sentence_stays_whole(self):
         """验证长句按动态目标保持完整，不被硬切。"""
         text = (
-            "这个方案的核心价值在于把知识库从被动注入改成主动调用工具，"
-            "从而彻底切断污染源，让模型只在真正需要时才检索记忆，"
-            "不再每轮都往上下文里塞无关内容。"
+            "这个方案的核心价值在于把配置从手动加载改成自动读取，"
+            "从而彻底减少重复处理，让程序只在真正需要时才解析文件，"
+            "不再每轮都加载无关内容。"
         )
         segments = local_fallback_split(text, 12, 180)
         self.assertEqual(segments, [text])
