@@ -30,20 +30,22 @@
 ### 1. 风格兼容性声明
 > ⚠️ **注意**：在开发与日常测试过程中，**维护者始终采用 `natural`（自然）分段风格**。由于未能对其他分段风格（如 `conservative` 或 `active`）进行充分的回归测试，我不确定切换风格后是否会产生意料之外的分段异常。**强烈建议保持使用 `natural` 风格以确保稳定性**。
 
-### 2. 针对本地轻量模型（Qwen3.5-4B-MTP Q4KXL）的推荐配置参考
-如果你的分段模型运行在本地（例如通过 Ollama 运行 `hf.co/unsloth/Qwen3.5-4B-MTP-GGUF:UD-Q4_K_XL`），以下是经过维护者实测并长期使用的稳定配置：
+### 2. 当前维护者生产配置参考
+以下为当前维护者实测并使用的稳定配置：
 
-*   **分段模型 Provider ID**：`ollama/hf.co/unsloth/Qwen3.5-4B-MTP-GGUF:UD-Q4_K_XL`
+*   **分段模型 Provider ID**：`llama/qwen3.5-4b-q4kxl`
 *   **分段风格**：`natural`（强烈推荐）
-*   **分段模型温度（Temperature）**：`0`（建议设为0。对于本地小模型，降低随机性是防止格式崩溃最有效的手段）
+*   **最小分段长度**：`12`
 *   **最大分段数量**：`12`
 *   **单条消息最大字符数（`max_chars_per_segment`）**：`180`
 *   **Markdown 清洗模式（`markdown_clean_mode`）**：`light`（日常聊天清洗轻量标记，JSON、代码围栏、表格等重度结构跳过；如需测试全部清洗可临时改为 `heavy`）
-*   **分段模型超时时间 (秒)**：`20`（本地运行由于硬件性能或首字延迟加载较慢，建议放宽至 20 秒）
-*   **补发基础延迟 (秒)**：`2`
+*   **分段模型温度（Temperature）**：`0.3`
+*   **分段模型最大输出 token**：`600`
+*   **分段模型超时时间 (秒)**：`10`
+*   **补发基础延迟 (秒)**：`1.25`
 *   **按字符增加延迟 (秒/字符)**：`0.05`
-*   **单段最大补发延迟（秒）**：`3`
-*   **不想调用模型时**：开启 `use_local_only=true`，此时 `provider_id`、`temperature`、`max_tokens`、`timeout_seconds` 等模型参数可忽略。
+*   **单段最大补发延迟（秒）**：`2`
+*   **本地模式**：如需完全不调用模型，可将 `use_local_only=true`；否则保持 `false` 使用上方分段模型。
 
 ## 配置说明（全局列表）
 
@@ -51,18 +53,18 @@
 | --- | --- | --- |
 | `enabled` | 启用/禁用插件 | `true` |
 | `use_local_only` | 仅使用本地高精度切分，不调用分段模型 | `false` |
-| `provider_id` | 分段模型 Provider ID，留空使用当前会话模型 | `""` |
+| `provider_id` | 分段模型 Provider ID，留空使用当前会话模型 | `llama/qwen3.5-4b-q4kxl` |
 | `style` | `natural` / `conservative` / `active` | `natural` |
-| `min_length` | 文本短于该长度不分段 | `15` |
-| `max_segments` | 单次最多分段数量 | `8` |
+| `min_length` | 文本短于该长度不分段 | `12` |
+| `max_segments` | 单次最多分段数量 | `12` |
 | `max_chars_per_segment` | 单条消息最大字符数，超过后按标点二次拆分 | `180` |
 | `markdown_clean_mode` | `off` / `light` / `heavy`；light 只清洗轻量标记并跳过重度结构，heavy 清洗全部 Markdown 标记 | `light` |
 | `temperature` | 分段模型温度 | `0.3` |
 | `max_tokens` | 分段模型最大输出 token | `600` |
-| `timeout_seconds` | 分段模型超时时间 | `12.0` |
-| `delay_base` | 补发基础延迟（秒） | `0.35` |
-| `delay_per_char` | 按字符增加的延迟（秒/字符） | `0.015` |
-| `delay_max` | 单段最大补发延迟（秒） | `1.2` |
+| `timeout_seconds` | 分段模型超时时间 | `10.0` |
+| `delay_base` | 补发基础延迟（秒） | `1.25` |
+| `delay_per_char` | 按字符增加的延迟（秒/字符） | `0.05` |
+| `delay_max` | 单段最大补发延迟（秒） | `2.0` |
 
 > 💡 **使用建议**：建议关闭 AstrBot 内置的 `platform_settings.segmented_reply.enable`，避免其与本插件产生重复分段。
 

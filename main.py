@@ -36,23 +36,25 @@ from .segmentation import (
 
 _PREPARED_SEGMENT_TTL_SECONDS = 60.0
 _PENDING_FOLLOW_UP_TTL_SECONDS = 60.0
+_PENDING_REAPER_INTERVAL_SECONDS = 5.0
 _PENDING_EXTRA_KEY = "smart_segmentation_pending_id"
+_PREPARED_EXTRA_KEY = "smart_segmentation_prepared_segments"
 
 
 @dataclass(slots=True)
 class SegmentationSettings:
     enabled: bool = True
     use_local_only: bool = False
-    provider_id: str = ""
+    provider_id: str = "llama/qwen3.5-4b-q4kxl"
     style: str = "natural"
-    min_length: int = 15
-    max_segments: int = 8
+    min_length: int = 12
+    max_segments: int = 12
     temperature: float = 0.3
     max_tokens: int = 600
-    timeout_seconds: float = 12.0
-    delay_base: float = 0.35
-    delay_per_char: float = 0.015
-    delay_max: float = 1.2
+    timeout_seconds: float = 10.0
+    delay_base: float = 1.25
+    delay_per_char: float = 0.05
+    delay_max: float = 2.0
     max_chars_per_segment: int = 180
     markdown_clean_mode: str = "light"
 
@@ -87,6 +89,7 @@ class SmartSegmentationPlugin(Star):
         self._pending_follow_ups: dict[str, PendingFollowUp] = {}
         self._active_follow_up_tasks: set[asyncio.Task[Any]] = set()
         self._session_locks: dict[str, asyncio.Lock] = {}
+        self._lock_reaper_task: asyncio.Task[Any] | None = None
 
     @filter.on_llm_response()
     async def on_llm_response(
@@ -153,6 +156,10 @@ class SmartSegmentationPlugin(Star):
             return
 
         self._store_prepared_segments(event.unified_msg_origin, text, segments)
+        event.set_extra(
+            _PREPARED_EXTRA_KEY,
+            {"text": text, "segments": list(segments)},
+        )
         logger.info("智能分段预处理完成，共 %s 段", len(segments))
 
     @filter.on_decorating_result()
@@ -179,6 +186,8 @@ class SmartSegmentationPlugin(Star):
             result.chain = [Plain(outbound_text)]
 
         session = event.unified_msg_origin
+        self._prune_expired_pending_follow_ups()
+        self._ensure_lock_reaper()
         lock = self._session_locks.get(session)
         if lock is None:
             lock = asyncio.Lock()
@@ -187,13 +196,19 @@ class SmartSegmentationPlugin(Star):
         follow_up_holds_lock = False
         try:
             # 传入最大分段数与最小长度参数，以支持自愈拼接决策及本地高精兜底切分
-            segments = self._pop_prepared_segments(
-                event.unified_msg_origin, 
+            segments = self._take_prepared_segments_from_event(
+                event,
                 outbound_text,
-                min_length=settings.min_length,
-                max_segments=settings.max_segments,
-                max_chars_per_segment=settings.max_chars_per_segment,
+                settings=settings,
             )
+            if segments is None:
+                segments = self._pop_prepared_segments(
+                    event.unified_msg_origin,
+                    outbound_text,
+                    min_length=settings.min_length,
+                    max_segments=settings.max_segments,
+                    max_chars_per_segment=settings.max_chars_per_segment,
+                )
             if not segments or len(segments) <= 1:
                 return
 
@@ -246,6 +261,13 @@ class SmartSegmentationPlugin(Star):
 
     async def terminate(self) -> None:
         """插件卸载时取消尚未完成的补发任务并清空缓存。"""
+        if self._lock_reaper_task is not None and not self._lock_reaper_task.done():
+            self._lock_reaper_task.cancel()
+            try:
+                await self._lock_reaper_task
+            except asyncio.CancelledError:
+                pass
+            self._lock_reaper_task = None
         for task in list(self._active_follow_up_tasks):
             if not task.done():
                 task.cancel()
@@ -487,6 +509,80 @@ class SmartSegmentationPlugin(Star):
         )
         return restore_pipe_in_segments(segments, pipe_placeholder)
 
+    def _take_prepared_segments_from_event(
+        self,
+        event: AstrMessageEvent,
+        outbound_text: str,
+        *,
+        settings: SegmentationSettings,
+    ) -> list[str] | None:
+        """Use segments bound to the current event before falling back to hashing."""
+        extra = event.get_extra(_PREPARED_EXTRA_KEY, None)
+        if not isinstance(extra, dict):
+            return None
+
+        prepared_text = str(extra.get("text") or "")
+        prepared_segments = extra.get("segments")
+        if not prepared_text or not isinstance(prepared_segments, list):
+            return None
+        if not prepared_segments:
+            return []
+
+        if outbound_text == prepared_text:
+            return list(prepared_segments)
+
+        outbound_key = normalize_content_key(outbound_text)
+        prepared_key = normalize_content_key(prepared_text)
+        if outbound_key == prepared_key:
+            return list(prepared_segments)
+        if outbound_key.startswith(prepared_key) and outbound_text.startswith(
+            prepared_text
+        ):
+            segments = list(prepared_segments)
+            suffix = outbound_text[len(prepared_text) :]
+            suffix_segments = local_fallback_split(
+                suffix,
+                settings.max_segments,
+                settings.max_chars_per_segment,
+            )
+            segments.extend(suffix_segments)
+            return segments
+        return None
+
+    def _ensure_lock_reaper(self) -> None:
+        """Ensure expired pending locks are released even without after_message_sent."""
+        if self._lock_reaper_task is None or self._lock_reaper_task.done():
+            self._lock_reaper_task = asyncio.create_task(self._run_lock_reaper())
+
+    async def _run_lock_reaper(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(_PENDING_REAPER_INTERVAL_SECONDS)
+                self._prune_expired_pending_follow_ups()
+        except asyncio.CancelledError:
+            raise
+
+    async def _send_follow_up_with_retry(
+        self,
+        session: str,
+        segment: str,
+        attempts: int = 3,
+    ) -> bool:
+        for attempt in range(1, attempts + 1):
+            try:
+                sent = await self.context.send_message(
+                    session,
+                    MessageChain([Plain(segment)]),
+                )
+            except Exception as exc:
+                logger.warning("智能分段补发第 %s 次异常: %s", attempt, exc)
+                sent = False
+            if sent:
+                return True
+            if attempt < attempts:
+                await asyncio.sleep(min(0.5 * attempt, 2.0))
+        return False
+
     def _store_prepared_segments(
         self,
         session: str,
@@ -670,13 +766,12 @@ class SmartSegmentationPlugin(Star):
                 if delay > 0:
                     await asyncio.sleep(delay)
 
-                sent = await self.context.send_message(
+                sent = await self._send_follow_up_with_retry(
                     pending.session,
-                    MessageChain([Plain(segment)]),
+                    segment,
                 )
                 if not sent:
-                    logger.error("智能分段补发失败，会话: %s", pending.session)
-                    return
+                    logger.error("智能分段补发最终失败，会话: %s", pending.session)
         except asyncio.CancelledError:
             logger.warning("智能分段后台补发任务被取消，会话: %s", pending.session)
             raise

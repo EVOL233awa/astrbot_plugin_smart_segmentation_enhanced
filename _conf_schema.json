@@ -15,7 +15,7 @@
     "type": "string",
     "description": "分段模型 Provider ID",
     "hint": "留空使用当前会话正在使用的聊天模型；也可在此选择一个小模型专门用于分段。",
-    "default": "",
+    "default": "llama/qwen3.5-4b-q4kxl",
     "_special": "select_provider"
   },
   "style": {
@@ -33,7 +33,7 @@
     "type": "int",
     "description": "最小分段长度",
     "hint": "回复文本短于该长度时不调用分段模型。",
-    "default": 15,
+    "default": 12,
     "slider": {
       "min": 0,
       "max": 200,
@@ -44,7 +44,7 @@
     "type": "int",
     "description": "最大分段数量",
     "hint": "用于限制单次回复最多拆成多少条，避免刷屏。",
-    "default": 8,
+    "default": 12,
     "slider": {
       "min": 1,
       "max": 20,
@@ -97,7 +97,7 @@
     "type": "float",
     "description": "分段模型超时时间（秒）",
     "hint": "超过该时间会跳过本次分段，直接发送原回复。",
-    "default": 12.0,
+    "default": 10.0,
     "slider": {
       "min": 1,
       "max": 60,
@@ -107,7 +107,7 @@
   "delay_base": {
     "type": "float",
     "description": "补发基础延迟（秒）",
-    "default": 0.35,
+    "default": 1.25,
     "slider": {
       "min": 0,
       "max": 5,
@@ -117,7 +117,7 @@
   "delay_per_char": {
     "type": "float",
     "description": "按字符增加延迟（秒/字符）",
-    "default": 0.015,
+    "default": 0.05,
     "slider": {
       "min": 0,
       "max": 0.2,
@@ -127,7 +127,7 @@
   "delay_max": {
     "type": "float",
     "description": "单段最大补发延迟（秒）",
-    "default": 1.2,
+    "default": 2.0,
     "slider": {
       "min": 0,
       "max": 10,

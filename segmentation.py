@@ -12,6 +12,43 @@ from typing import Any
 
 _LOG = logging.getLogger(__name__)
 
+_MDIT_INSTANCE = None
+_MDIT_AVAILABLE = False
+try:
+    from markdown_it import MarkdownIt
+    from mdit_plain.renderer import RendererPlain
+
+    _MDIT_INSTANCE = MarkdownIt(renderer_cls=RendererPlain)
+    _MDIT_AVAILABLE = True
+except Exception:
+    _MDIT_INSTANCE = None
+    _MDIT_AVAILABLE = False
+
+_HEAVY_FALLBACK_WARNED = False
+
+
+def _warn_heavy_fallback_once() -> None:
+    global _HEAVY_FALLBACK_WARNED
+    if _HEAVY_FALLBACK_WARNED:
+        return
+    _HEAVY_FALLBACK_WARNED = True
+    _LOG.warning(
+        "mdit_plain/markdown-it-py 不可用，heavy Markdown 清洗降级为内容保全式正则"
+    )
+
+
+def _render_heavy_markdown(text: str) -> str:
+    """Render pre-cleaned Markdown to plain text when the real renderer exists."""
+    if _MDIT_AVAILABLE and _MDIT_INSTANCE is not None:
+        try:
+            return _MDIT_INSTANCE.render(text).strip()
+        except Exception:
+            _warn_heavy_fallback_once()
+    else:
+        _warn_heavy_fallback_once()
+    return text
+
+
 # 正则表达式定义
 THINKING_TAG_RE = re.compile(
     r"<thinking>(?:[\s\S]*?)(?:</thinking>|$)",
@@ -598,6 +635,46 @@ def _merge_to_global_max(
     return result
 
 
+def _force_join_for_cap(left: str, right: str) -> str:
+    """Join adjacent segments for the final hard cap without losing content."""
+    if (
+        has_protected_block(left)
+        or has_protected_block(right)
+        or is_action_only_text(left)
+        or is_action_only_text(right)
+    ):
+        return left.rstrip() + "\n\n" + right.lstrip()
+    return _join_adjacent(left, right, 0)
+
+
+def _force_merge_to_max_segments(
+    segments: list[str],
+    max_segments: int,
+    max_chars: int = 0,
+) -> list[str]:
+    """Final fallback that guarantees the segment count hard cap is met."""
+    if max_segments <= 0 or len(segments) <= max_segments:
+        return list(segments)
+
+    result = list(segments)
+    while len(result) > max_segments:
+        best_index: int | None = None
+        best_length: int | None = None
+        for index in range(len(result) - 1):
+            merged = _force_join_for_cap(result[index], result[index + 1])
+            if best_length is None or len(merged) < best_length:
+                best_index = index
+                best_length = len(merged)
+        if best_index is None:
+            break
+        result[best_index] = _force_join_for_cap(
+            result[best_index],
+            result[best_index + 1],
+        )
+        del result[best_index + 1]
+    return result
+
+
 def pack_segments_to_target(
     segments: list[str],
     target: int,
@@ -653,6 +730,11 @@ def pack_segments_to_target(
             _LOG.warning(
                 "文本长度超过 max_segments * max_chars_per_segment，"
                 "无法同时满足硬段数与硬单条长度；已优先避免超长尾段"
+            )
+            packed = _force_merge_to_max_segments(
+                packed,
+                max_segs,
+                max_chars or target,
             )
     return packed
 
@@ -858,6 +940,38 @@ def _clean_markdown_region_heavy(text: str) -> str:
     return "\n".join(cleaned_lines).strip()
 
 
+def _split_code_spans(text: str) -> list[str]:
+    """Split text into code spans and ordinary Markdown spans."""
+    return re.split(r"(```[\s\S]*?(?:```|$))", text)
+
+
+def _clean_code_span(span: str) -> str:
+    lines = span.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines)
+
+
+def _clean_heavy_chunk_with_mdit(text: str, *, markdown_region: bool) -> str:
+    """Clean heavy Markdown while keeping code block bodies untouched by the renderer."""
+    cleaned_parts: list[str] = []
+    for part in _split_code_spans(text):
+        if part.startswith("```"):
+            cleaned_parts.append(_clean_code_span(part))
+            continue
+        if markdown_region:
+            cleaned_parts.append(
+                _render_heavy_markdown(_clean_markdown_region_heavy(part))
+            )
+        else:
+            cleaned_parts.append(
+                _render_heavy_markdown(_clean_heavy_text_regex(part))
+            )
+    return "\n".join(cleaned_parts).strip()
+
+
 def clean_heavy_markdown(text: str) -> str:
     """Clean all Markdown while preserving JSON and code/table/list content."""
     if not text:
@@ -871,9 +985,13 @@ def clean_heavy_markdown(text: str) -> str:
         if kind == "json":
             cleaned_parts.append(chunk)
         elif kind == "markdown":
-            cleaned_parts.append(_clean_markdown_region_heavy(chunk))
+            cleaned_parts.append(
+                _clean_heavy_chunk_with_mdit(chunk, markdown_region=True)
+            )
         else:
-            cleaned_parts.append(_clean_heavy_text_regex(chunk))
+            cleaned_parts.append(
+                _clean_heavy_chunk_with_mdit(chunk, markdown_region=False)
+            )
     return "\n".join(part for part in cleaned_parts if part is not None).strip()
 
 
@@ -1369,6 +1487,7 @@ def stabilize_segment_lengths(
             parts = split_parts
         stabilized.extend(parts)
     stabilized = _merge_to_global_max(stabilized, max_segs, max_chars)
+    stabilized = _force_merge_to_max_segments(stabilized, max_segs, max_chars)
     return stabilized
 
 
@@ -1599,7 +1718,8 @@ def local_fallback_split(
     if is_non_natural_language(cleaned) and not has_protected_block(cleaned):
         return safe_escape_segments([cleaned.strip()])
 
-    # 整篇均为 Markdown 结构时整体放行。
+    # 保留 v1.3.0 Markdown 区域保护：整篇 Markdown 整体放行，
+    # 避免拆成多条后耗尽分段预算，把剩余内容全部挤到末尾。
     if is_markdown_document(cleaned):
         return safe_escape_segments([cleaned.strip()])
 
@@ -1652,4 +1772,5 @@ def local_fallback_split(
         )
     if max_segments > 0:
         packed = _merge_to_global_max(packed, max_segments, max_chars)
+        packed = _force_merge_to_max_segments(packed, max_segments, max_chars)
     return safe_escape_segments(packed)

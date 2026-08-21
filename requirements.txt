@@ -1,0 +1,2 @@
+markdown-it-py>=3.0,<5
+mdit-plain>=0.4,<2

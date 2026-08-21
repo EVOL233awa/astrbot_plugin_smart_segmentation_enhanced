@@ -842,6 +842,62 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         segments = local_fallback_split(text, 12, 180)
         self.assertLessEqual(len(segments), 12)
 
+    def test_global_max_segments_hard_with_many_action_segments(self):
+        """验证动作原子段过多时仍受全局 max_segments 硬上限约束。"""
+        text = "".join(f"（动作{i}）" for i in range(14))
+        segments = local_fallback_split(text, 12, 180)
+        self.assertLessEqual(len(segments), 12)
+        self.assertEqual("".join(segments).replace("\n", ""), text)
+
+    def test_stabilize_max_segments_hard_with_many_action_segments(self):
+        """验证长度稳定阶段的最终兜底也能压到硬段数以内。"""
+        segments = [f"（动作{i}）" for i in range(14)]
+        stabilized = stabilize_segment_lengths(
+            segments,
+            max_segments=12,
+            max_chars_per_segment=180,
+        )
+        self.assertLessEqual(len(stabilized), 12)
+        self.assertEqual("".join(stabilized).replace("\n", ""), "".join(segments))
+
+    def test_model_parse_max_segments_hard_with_many_action_segments(self):
+        """验证模型路径返回过多动作段时也会被硬上限约束。"""
+        raw_segments = [f"（动作{i}）" for i in range(14)]
+        model_output = " | ".join(raw_segments)
+        fallback = "".join(raw_segments)
+        segments = parse_segments_from_model_output(
+            model_output,
+            fallback_text=fallback,
+            max_segments=12,
+            max_chars_per_segment=180,
+        )
+        self.assertLessEqual(len(segments), 12)
+        self.assertEqual("".join(segments).replace("\n", ""), fallback)
+
+    def test_heavy_markdown_region_with_plain_prose_stays_merged(self):
+        """验证 v1.3.0 Markdown 区域保护：含正文的重度 Markdown 仍整块放行。"""
+        text = (
+            "# 标题\n\n"
+            "正文第一句。正文第二句。\n\n"
+            "- 项目一\n"
+            "- 项目二\n\n"
+            "> 引用第一句。引用第二句。"
+        )
+        self.assertTrue(is_markdown_heavy(text))
+        self.assertTrue(is_markdown_document(text))
+        segments = local_fallback_split(text, 12, 180)
+        self.assertEqual(segments, [text])
+
+    def test_heavy_cleaning_removes_markdown_markers(self):
+        """验证 heavy 模式无论是否走 mdit_plain 都输出纯文本。"""
+        self.assertEqual(
+            clean_markdown_by_mode(
+                "**加粗** 和 `代码` 以及 [链接](https://example.com)",
+                "heavy",
+            ),
+            "加粗 和 代码 以及 链接 (https://example.com)",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

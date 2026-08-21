@@ -3,6 +3,7 @@
 import asyncio
 import os
 import sys
+import time
 import types
 import unittest
 
@@ -100,6 +101,7 @@ def _install_fake_astrbot():
 AstrBotConfig, MessageChain, Plain, Context, Star = _install_fake_astrbot()
 
 from astrbot_plugin_smart_segmentation.main import (  # noqa: E402
+    _PREPARED_EXTRA_KEY,
     PendingFollowUp,
     SmartSegmentationPlugin,
 )
@@ -321,6 +323,99 @@ class TestSessionSerialization(unittest.IsolatedAsyncioTestCase):
         await plugin.on_llm_response(event, response)
 
         self.assertTrue(plugin._prepared_segments)
+
+    async def test_expired_pending_lock_released_before_next_decorate(self):
+        plugin = SmartSegmentationPlugin(FakeContext(), {"enabled": True})
+        text = (
+            "first long segment enough for testing lock. "
+            "second long segment enough for blocking."
+        )
+        plugin._store_prepared_segments(
+            "s",
+            text,
+            [
+                "first long segment enough for testing lock.",
+                "second long segment enough for blocking.",
+            ],
+        )
+        ev1 = FakeEvent("s", FakeResult(text))
+        await plugin.on_decorating_result(ev1)
+        pending_id = ev1.extra["smart_segmentation_pending_id"]
+        plugin._pending_follow_ups[pending_id].expires_at = time.monotonic() - 1
+
+        ev2 = FakeEvent("s", FakeResult(text))
+        task = asyncio.create_task(plugin.on_decorating_result(ev2))
+        await asyncio.wait_for(task, timeout=1)
+        self.assertIn("smart_segmentation_pending_id", ev2.extra)
+
+    async def test_follow_up_retries_failed_send(self):
+        class RetryContext(FakeContext):
+            def __init__(self):
+                super().__init__()
+                self.fail_first = True
+
+            async def send_message(self, session, chain):
+                if self.fail_first:
+                    self.fail_first = False
+                    return False
+                self.sent.append((session, chain))
+                return True
+
+        plugin = SmartSegmentationPlugin(RetryContext(), {"enabled": True})
+        lock = asyncio.Lock()
+        await lock.acquire()
+        pending = PendingFollowUp(
+            session="s",
+            segments=["seg1", "seg2", "seg3"],
+            delay_base=0.0,
+            delay_per_char=0.0,
+            delay_max=0.0,
+            expires_at=999999999.0,
+            lock=lock,
+        )
+        await plugin._run_follow_up_segments(pending)
+        self.assertEqual(len(plugin.context.sent), 3)
+        self.assertFalse(lock.locked())
+
+    async def test_follow_up_continues_after_permanent_failure(self):
+        class AlwaysFailContext(FakeContext):
+            async def send_message(self, session, chain):
+                self.sent.append((session, chain))
+                return False
+
+        plugin = SmartSegmentationPlugin(AlwaysFailContext(), {"enabled": True})
+        lock = asyncio.Lock()
+        await lock.acquire()
+        pending = PendingFollowUp(
+            session="s",
+            segments=["seg1", "seg2", "seg3"],
+            delay_base=0.0,
+            delay_per_char=0.0,
+            delay_max=0.0,
+            expires_at=999999999.0,
+            lock=lock,
+        )
+        await plugin._run_follow_up_segments(pending)
+        self.assertEqual(len(plugin.context.sent), 9)
+        self.assertFalse(lock.locked())
+
+    async def test_event_extra_binding_avoids_cache_fallback(self):
+        plugin = SmartSegmentationPlugin(FakeContext(), {"enabled": True})
+        original = "原始回复内容足够长，用于验证事件绑定。"
+        prepared = ["自定义边界一", "自定义边界二", "自定义边界三"]
+        suffix = "其他插件追加的尾部内容。"
+        outbound = original + suffix
+        event = FakeEvent("s", FakeResult(outbound))
+        event.set_extra(
+            _PREPARED_EXTRA_KEY,
+            {"text": original, "segments": list(prepared)},
+        )
+        await plugin.on_decorating_result(event)
+        pending_id = event.extra["smart_segmentation_pending_id"]
+        pending = plugin._pending_follow_ups[pending_id]
+        self.assertEqual(event.result.chain[0].text, prepared[0])
+        self.assertTrue(pending.segments[:2] == prepared[1:])
+        self.assertTrue(any(suffix[:8] in seg for seg in pending.segments))
 
 
 if __name__ == "__main__":

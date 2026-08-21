@@ -4,6 +4,21 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.3.6] - 2026-08-21
+
+### Fixed
+- **修复 `max_segments` 被原子段绕过**：动作括号、JSON、Markdown 等原子段过多时，最终兜底合并仍会保证总段数不超过配置上限，同时保留全部原文。
+- **修复补发挂起时同会话锁泄漏**：装饰前会清理过期 pending，并增加后台清理任务；即使 `after_message_sent` 未触发，过期锁也会被释放。
+- **修复补发失败导致后续消息全部丢失**：单条补发失败会有限重试，最终失败后继续补发其余分段，不再截断整条回复。
+- **修复装饰阶段缓存失配导致整条回复被重新切分**：预分段结果直接绑定到当前事件，其他插件追加内容时只补切未匹配后缀。
+
+### Changed
+- **恢复 heavy Markdown 主路径**：优先使用 `markdown-it-py` + `mdit_plain` 将 Markdown 清洗为纯文本；依赖缺失时保留内容保全式正则降级，JSON 与代码正文不会被破坏。
+- **配置默认值与 README 推荐配置同步**：按当前生产配置更新 `provider_id`、`min_length`、`max_segments`、`timeout_seconds` 与补发延迟默认值。
+
+### Added
+- **新增 9 个回归测试**：覆盖原子段硬上限、过期锁清理、补发重试与继续、事件级缓存绑定、Markdown 区域整块保护及 heavy 纯文本清洗。
+
 ## [1.3.5] - 2026-08-18
 
 ### Fixed
@@ -191,3 +206,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 [1.3.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.1
 [1.3.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.2
 [1.3.3]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.3
+[1.3.4]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.4
+[1.3.5]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.5
+[1.3.6]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.6
