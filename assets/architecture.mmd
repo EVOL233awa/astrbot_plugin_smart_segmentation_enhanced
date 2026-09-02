@@ -7,7 +7,7 @@ flowchart TB
 
     subgraph Main["主控层 main.py"]
         Config["SegmentationSettings"]
-        Cache["预分段缓存"]
+        Cache["预分段缓存检索：精确哈希 / 签名相等 / 前缀拼合 / contains 对齐"]
         Locks["会话串行锁"]
         Pending["补发任务管理"]
         Scheduler["异步补发调度"]
@@ -20,7 +20,7 @@ flowchart TB
         LLM["LLM 分段调用与解析"]
         Reconstruct["原文标点重建"]
         Leading["前导标点归属"]
-        Local["本地高精切分（含原子块扫描）"]
+        Local["本地高精切分（原子块扫描 / 句中括号回并）"]
         Stabilize["长度稳定 / 全局打包"]
     end
 
@@ -42,7 +42,7 @@ flowchart TB
     Local --> Stabilize
     Stabilize --> Cache
     Hook2 --> Cache
-    Hook2 -->|缓存未命中| Local
+    Hook2 -->|检索全未命中| Local
     Cache --> Locks
     Hook2 --> Chain
     Hook3 --> Pending
