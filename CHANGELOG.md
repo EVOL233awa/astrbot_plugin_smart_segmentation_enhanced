@@ -4,6 +4,25 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.4.0] - 2026-09-02
+
+### Fixed
+- **修复 Tool Loop 场景缓存必然失配**：工具调用后装饰阶段文本含工具轮插入内容，预处理缓存经精确哈希、签名与前缀拼合全部失配，回复每次整体降级重切。现按内容签名在 outbound 中定位预处理分段，头部/尾部插入内容仅做补切，预处理分段边界全部保留。
+- **修复句中括号切断原句**：正文内括号数字/缩写/插入语（如"（先扫码）"）不再独立成段；句首动作与句末标点之后的动作仍独立成段。本地切分、模型分段重建与超长二次拆分路径同步生效。
+- **修复负向缓存条目参与拼合导致中间文本被吞**：超时/异常/无 provider 写入的空分段不再参与贪婪拼合与对齐（v1.3.6 即存在此隐患）。
+- **修复强制合并段内空行**：动作段与正文改为直接连排；代码块/JSON 等受保护块之间仍保留空行。
+- **修复对齐边界标点重复**：prepared 首/尾标点在插入内容切分时不再被复制到相邻段。
+- **防御加固**：`max_chars_per_segment=0` 时 `max_segments` 硬上限同样生效。
+
+### Changed
+- 对齐补切的段数预算与已有分段数联动，总段数尽量不超出 `max_segments`，内容完整性优先于段数。
+- 内部可维护性重构（行为等价）：删除死代码与冗余合并函数，抽取配置解析与超长拆分公共函数，测试基建移至 `tests/conftest.py`，v1.2.2 历史备份移出插件目录。
+- 配置缺失键时的代码兜底默认值统一为 `_conf_schema.json` 同值（原六项漂移），现有完整配置行为不变。
+- `temperature` 与 `max_tokens` 在 AstrBot v4.27.2 上因宿主不透传 kwargs 暂不生效，平台修复后自动生效，详见 README 说明。
+
+### Added
+- 新增 24 个回归测试：Tool Loop 对齐、句中括号回并、负向缓存不吞字、强制合并排版与退化输入等。
+
 ## [1.3.6] - 2026-08-21
 
 ### Fixed
@@ -209,3 +228,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 [1.3.4]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.4
 [1.3.5]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.5
 [1.3.6]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.6
+[1.4.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.4.0
