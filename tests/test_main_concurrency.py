@@ -4,101 +4,18 @@ import asyncio
 import os
 import sys
 import time
-import types
 import unittest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PLUGIN_PARENT = os.path.dirname(ROOT)
-sys.path.insert(0, ROOT)
-sys.path.insert(0, PLUGIN_PARENT)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-
-def _install_fake_astrbot():
-    astrbot = types.ModuleType("astrbot")
-    api = types.ModuleType("astrbot.api")
-    event_mod = types.ModuleType("astrbot.api.event")
-    filter_mod = types.ModuleType("astrbot.api.event.filter")
-    components = types.ModuleType("astrbot.api.message_components")
-    provider = types.ModuleType("astrbot.api.provider")
-    star = types.ModuleType("astrbot.api.star")
-
-    sys.modules["astrbot"] = astrbot
-    sys.modules["astrbot.api"] = api
-    sys.modules["astrbot.api.event"] = event_mod
-    sys.modules["astrbot.api.event.filter"] = filter_mod
-    sys.modules["astrbot.api.message_components"] = components
-    sys.modules["astrbot.api.provider"] = provider
-    sys.modules["astrbot.api.star"] = star
-
-    class AstrBotConfig(dict):
-        pass
-
-    class Logger:
-        def info(self, *args, **kwargs):
-            pass
-
-        def warning(self, *args, **kwargs):
-            pass
-
-        def error(self, *args, **kwargs):
-            pass
-
-        def debug(self, *args, **kwargs):
-            pass
-
-    api.AstrBotConfig = AstrBotConfig
-    api.logger = Logger()
-
-    class AstrMessageEvent:
-        pass
-
-    class MessageChain:
-        def __init__(self, chain):
-            self.chain = chain
-
-    class MessageEventResult:
-        pass
-
-    event_mod.AstrMessageEvent = AstrMessageEvent
-    event_mod.MessageChain = MessageChain
-    event_mod.MessageEventResult = MessageEventResult
-
-    def hook(*args, **kwargs):
-        def deco(fn):
-            return fn
-
-        return deco
-
-    filter_mod.on_llm_response = hook
-    filter_mod.on_decorating_result = hook
-    filter_mod.after_message_sent = hook
-    event_mod.filter = filter_mod
-
-    class Plain:
-        def __init__(self, text):
-            self.text = text
-
-    components.Plain = Plain
-
-    class LLMResponse:
-        pass
-
-    provider.LLMResponse = LLMResponse
-
-    class Context:
-        pass
-
-    class Star:
-        def __init__(self, context):
-            self.context = context
-
-    star.Context = Context
-    star.Star = Star
-
-    return AstrBotConfig, MessageChain, Plain, Context, Star
-
-
-AstrBotConfig, MessageChain, Plain, Context, Star = _install_fake_astrbot()
+from tests.conftest import (  # noqa: E402,F401
+    FakeContext,
+    FakeEvent,
+    FakeLLMResponse,
+    FakeResult,
+    MessageChain,
+    Plain,
+)
 
 from astrbot_plugin_smart_segmentation.main import (  # noqa: E402
     _PREPARED_EXTRA_KEY,

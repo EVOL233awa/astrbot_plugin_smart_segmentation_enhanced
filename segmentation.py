@@ -76,6 +76,9 @@ BRACKET_PAIRS: tuple[tuple[str, str], ...] = (
 
 _HARD_SENTENCE_END_CHARS = frozenset("！？!?")
 
+# 句边界终止符：括号动作独立成段的必要条件是前文终止于这些字符（或位于文本开头）
+_SENTENCE_BOUNDARY_CHARS = frozenset("。！？!?~…")
+
 _LEFT_BOUNDARY_CHARS = frozenset("（([【“‘「『《")
 _SEGMENT_LEADING_PUNCT_CHARS = frozenset("…·~—–―〜？！。.")
 _LEADING_PUNCTUATION_RE = re.compile(
@@ -92,6 +95,15 @@ STYLE_GUIDES = {
 def is_ascii_alnum(char: str) -> bool:
     """仅判定字符是否为 ASCII 范围内的字母或数字，避免中文字符干扰。"""
     return char.isascii() and char.isalnum()
+
+
+def _as_nonneg_int(value: Any) -> int:
+    """将配置值安全解析为非负整数；空值、非法值或负数一律回落到 0（不限制）。"""
+    try:
+        parsed = int(value) if value is not None else 0
+    except (ValueError, TypeError):
+        return 0
+    return parsed if parsed >= 0 else 0
 
 
 # 颜文字与纯标点识别器
@@ -213,36 +225,6 @@ def safe_escape_segments(segments: list[str]) -> list[str]:
     return processed_segments
 
 
-def is_markdown_heavy(text: str) -> bool:
-    """
-    检测文本是否包含大量 Markdown 格式特征。
-    其判定结果供调用方决策是否放弃句末标点切分，改用双换行段落拆分，以保护内部格式。
-    """
-    lines = [line for line in text.splitlines() if line.strip()]
-    if not lines:
-        return False
-        
-    md_patterns = [
-        r"^#{1,6}\s", r"^[\*\-\+]\s", r"^\d+\.\s", r"^>\s",
-        r"^`{3}", r"^\|.*\|", r"^[-*_]{3,}$",
-        r"^\s*[{\[]", r'^\s*"[^"]+"\s*:',
-    ]
-    md_line_count = 0
-    for line in lines:
-        stripped = line.strip()
-        for pattern in md_patterns:
-            if re.match(pattern, stripped):
-                md_line_count += 1
-                break
-                
-    if len(lines) > 0 and (md_line_count / len(lines)) > 0.20:
-        return True
-    if md_line_count >= 2:
-        return True
-        
-    return False
-
-
 # Markdown block detection and protection
 _MD_HEADING_RE = re.compile(r"^#{1,6}\s")
 _MD_HR_RE = re.compile(r"^[-*_]{3,}\s*$")
@@ -351,15 +333,6 @@ def _is_markdown_block_start(line: str) -> bool:
         or _MD_TABLE_LINE_RE.match(stripped) is not None
         or _MD_LIST_LINE_RE.match(stripped) is not None
         or _MD_QUOTE_RE.match(stripped) is not None
-    )
-
-
-def _is_markdown_or_json_block_start(line: str) -> bool:
-    stripped = line.strip()
-    return (
-        _is_markdown_block_start(line)
-        or stripped.startswith("{")
-        or stripped.startswith("[")
     )
 
 
@@ -518,18 +491,8 @@ def compute_target_segment_length(
     sentence_lengths: list[int] | None = None,
 ) -> int:
     """Compute the code-layer target length for ordinary chat segments."""
-    try:
-        max_segs = int(max_segments) if max_segments is not None else 0
-    except (ValueError, TypeError):
-        max_segs = 0
-    try:
-        max_chars = (
-            int(max_chars_per_segment)
-            if max_chars_per_segment is not None
-            else 0
-        )
-    except (ValueError, TypeError):
-        max_chars = 0
+    max_segs = _as_nonneg_int(max_segments)
+    max_chars = _as_nonneg_int(max_chars_per_segment)
 
     total = len(str(text or ""))
     if sentence_lengths:
@@ -558,42 +521,6 @@ def _join_adjacent(left: str, right: str, limit: int = 0) -> str:
         if limit <= 0 or len(spaced) <= limit:
             return spaced
     return left + right
-
-
-def _merge_to_max_segments(
-    segments: list[str],
-    max_segments: int,
-    max_chars: int,
-) -> list[str]:
-    """Merge adjacent smallest groups until the hard segment count is satisfied."""
-    result = list(segments)
-    while len(result) > max_segments:
-        best_index: int | None = None
-        best_length: int | None = None
-        for index in range(len(result) - 1):
-            if is_action_only_text(result[index]) or is_action_only_text(
-                result[index + 1]
-            ):
-                continue
-            merged = _join_adjacent(
-                result[index],
-                result[index + 1],
-                max_chars if max_chars > 0 else 0,
-            )
-            if max_chars > 0 and len(merged) > max_chars:
-                continue
-            if best_length is None or len(merged) < best_length:
-                best_index = index
-                best_length = len(merged)
-        if best_index is None:
-            break
-        result[best_index] = _join_adjacent(
-            result[best_index],
-            result[best_index + 1],
-            max_chars if max_chars > 0 else 0,
-        )
-        del result[best_index + 1]
-    return result
 
 
 def _merge_to_global_max(
@@ -636,15 +563,14 @@ def _merge_to_global_max(
 
 
 def _force_join_for_cap(left: str, right: str) -> str:
-    """Join adjacent segments for the final hard cap without losing content."""
-    if (
-        has_protected_block(left)
-        or has_protected_block(right)
-        or is_action_only_text(left)
-        or is_action_only_text(right)
-    ):
+    """Join adjacent segments for the final hard cap without losing content.
+
+    受保护块（JSON/代码等）之间保留空行分隔以维持结构可读性；
+    动作段与普通正文直接连排，避免聊天气泡内出现无意义空行。
+    """
+    if has_protected_block(left) or has_protected_block(right):
         return left.rstrip() + "\n\n" + right.lstrip()
-    return _join_adjacent(left, right, 0)
+    return _join_adjacent(left.rstrip(), right.lstrip(), 0)
 
 
 def _force_merge_to_max_segments(
@@ -682,18 +608,8 @@ def pack_segments_to_target(
     max_chars_per_segment: int | str = 0,
 ) -> list[str]:
     """Pack atomic segments by target length without dumping a long tail."""
-    try:
-        max_segs = int(max_segments) if max_segments is not None else 0
-    except (ValueError, TypeError):
-        max_segs = 0
-    try:
-        max_chars = (
-            int(max_chars_per_segment)
-            if max_chars_per_segment is not None
-            else 0
-        )
-    except (ValueError, TypeError):
-        max_chars = 0
+    max_segs = _as_nonneg_int(max_segments)
+    max_chars = _as_nonneg_int(max_chars_per_segment)
 
     cleaned = [seg.strip() for seg in segments if seg and seg.strip()]
     if not cleaned:
@@ -725,7 +641,7 @@ def pack_segments_to_target(
         packed.append(current)
 
     if max_segs > 0:
-        packed = _merge_to_max_segments(packed, max_segs, max_chars or target)
+        packed = _merge_to_global_max(packed, max_segs, max_chars or target)
         if len(packed) > max_segs:
             _LOG.warning(
                 "文本长度超过 max_segments * max_chars_per_segment，"
@@ -1046,10 +962,7 @@ def robust_json_loads(json_str: str) -> Any:
 
 def normalize_segments(segments: Any, max_segments: int | str = 0) -> list[str]:
     """标准化并自动扁平化段落。使用空格拼接防止文本粘连。"""
-    try:
-        max_segs = int(max_segments) if max_segments is not None else 0
-    except (ValueError, TypeError):
-        max_segs = 0
+    max_segs = _as_nonneg_int(max_segments)
         
     if not isinstance(segments, list):
         if isinstance(segments, str):
@@ -1100,8 +1013,24 @@ def is_action_only_text(text: str) -> bool:
     return False
 
 
+def _buffer_ends_at_sentence_boundary(buffer: list[str]) -> bool:
+    """括号前文是否终止于句边界（决定括号段能否独立成段）。
+
+    句中括号（如"取件码（3-2-1874）还是"、"（先扫码）先于心理流程"）
+    是正文的一部分而非动作描写，回并前文避免句子被拦腰切断。
+    """
+    text = "".join(buffer).rstrip()
+    if not text:
+        return True
+    return text[-1] in _SENTENCE_BOUNDARY_CHARS
+
+
 def split_text_at_brackets(text: str) -> list[str]:
-    """把单段文本按括号边界拆成片段。已修复中文括号前置字符导致的失效问题。"""
+    """把单段文本按括号边界拆成片段。已修复中文括号前置字符导致的失效问题。
+
+    位于句边界的括号（句首动作、句末动作）独立成段；
+    句中括号回并前文，保持原句连续。
+    """
     if not text:
         return []
         
@@ -1142,11 +1071,13 @@ def split_text_at_brackets(text: str) -> list[str]:
             index = len(text)
             break
 
-        if buffer:
-            parts.append("".join(buffer))
-            buffer = []
-            
-        parts.append(text[index:scan_index])
+        if _buffer_ends_at_sentence_boundary(buffer):
+            if buffer:
+                parts.append("".join(buffer))
+                buffer = []
+            parts.append(text[index:scan_index])
+        else:
+            buffer.append(text[index:scan_index])
         index = scan_index
         
     if buffer:
@@ -1161,10 +1092,7 @@ def split_segments_at_bracket_boundaries(
     max_segments: int | str,
 ) -> list[str]:
     """把每段内的括号包裹内容拆成独立的消息段。采用强类型防御机制。"""
-    try:
-        max_segs = int(max_segments) if max_segments is not None else 0
-    except (ValueError, TypeError):
-        max_segs = 0
+    max_segs = _as_nonneg_int(max_segments)
         
     if not segments:
         return list(segments)
@@ -1200,6 +1128,82 @@ def normalize_content_key(text: str) -> str:
     """生成忽略空白、大小写与标点的内容签名，用于缓存容错匹配。"""
     cleaned = strip_thinking_content(str(text or ""))
     return "".join(char.lower() for char in cleaned if char.isalnum())
+
+
+def align_prepared_in_outbound(
+    outbound_text: str,
+    prepared_text: str,
+) -> tuple[str, str, str] | None:
+    """在 outbound 文本中按内容签名定位 prepared 文本，返回（头部, prepared原文段, 尾部）。
+
+    Tool Loop / 中间插件改写场景会在 prepared 文本头部或尾部插入其他内容，
+    签名（忽略空白、大小写与标点）定位可跨越这些插入。双向签名校验失败或
+    prepared 签名过短时返回 None，调用方应保守降级到本地切分。
+    """
+    outbound = str(outbound_text or "")
+    prepared = str(prepared_text or "")
+    if not outbound or not prepared:
+        return None
+    outbound_key = normalize_content_key(outbound)
+    prepared_key = normalize_content_key(prepared)
+    if not prepared_key or len(prepared_key) < 4:
+        return None
+    index = outbound_key.find(prepared_key)
+    if index == -1:
+        return None
+
+    def _pos_after_alnum_count(text: str, start: int, count: int) -> int:
+        """返回原文位置：从 start 起消耗 count 个 alnum 字符后的位置，不足返回 -1。"""
+        seen = 0
+        for pos in range(start, len(text)):
+            if text[pos].isalnum():
+                seen += 1
+                if seen == count:
+                    return pos + 1
+        return -1
+
+    head_end = 0
+    if index > 0:
+        head_end = _pos_after_alnum_count(outbound, 0, index)
+        if head_end == -1:
+            return None
+        while head_end < len(outbound) and not outbound[head_end].isalnum():
+            head_end += 1
+        # 吸收区间（head 末尾标点）若与 prepared 原文开头重叠（如 prepared 以
+        # "（"开头），重叠部分归还 middle，避免标点在 head 与 prepared 段中重复。
+        prep_lead = prepared.lstrip()
+        absorb = outbound[:head_end]
+        for k in range(min(len(prep_lead), len(absorb), 8), 0, -1):
+            if absorb.endswith(prep_lead[:k]):
+                head_end -= k
+                break
+
+    middle_end = _pos_after_alnum_count(outbound, head_end, len(prepared_key))
+    if middle_end == -1:
+        return None
+    raw_middle_end = middle_end
+    while middle_end < len(outbound) and not outbound[middle_end].isalnum():
+        middle_end += 1
+    # 吸收区间（prepared 末尾标点）与 prepared 原文结尾重叠的部分保留在
+    # middle，避免标点被划给 tail 造成内容重复。
+    prep_tail = prepared.rstrip()
+    absorb_tail = outbound[raw_middle_end:middle_end]
+    for k in range(min(len(prep_tail), len(absorb_tail), 8), 0, -1):
+        if absorb_tail.startswith(prep_tail[-k:]):
+            middle_end = raw_middle_end + k
+            break
+
+    head = outbound[:head_end]
+    middle = outbound[head_end:middle_end]
+    tail = outbound[middle_end:]
+
+    if normalize_content_key(head) != outbound_key[:index]:
+        return None
+    if normalize_content_key(middle) != prepared_key:
+        return None
+    if normalize_content_key(tail) != outbound_key[index + len(prepared_key):]:
+        return None
+    return head, middle, tail
 
 
 def _masked_position_map(masked_text: str, atoms: list[str]) -> list[int]:
@@ -1314,10 +1318,7 @@ def reconstruct_segments_from_model_output(
     max_segments: int | str = 0,
 ) -> list[str] | None:
     """用模型输出作为切分边界，从原始回复重建带完整标点的分段。"""
-    try:
-        max_segs = int(max_segments) if max_segments is not None else 0
-    except (ValueError, TypeError):
-        max_segs = 0
+    max_segs = _as_nonneg_int(max_segments)
 
     original = str(original_text or "")
     if not original or not model_segments:
@@ -1362,6 +1363,12 @@ def reconstruct_segments_from_model_output(
 
     bounds = set(protected_starts)
     for span_start, span_end in spans:
+        # 句中括号（如"取件码（3-2-1874）还是"）不是段边界，避免原句被拦腰切断；
+        # 位于文本开头或句末标点之后的括号才允许独立成段。
+        if span_start > 0:
+            prev_text = original[:span_start].rstrip()
+            if prev_text and prev_text[-1] not in _SENTENCE_BOUNDARY_CHARS:
+                continue
         bounds.add(span_start)
         bounds.add(span_end)
     ordered_bounds = sorted(bounds)
@@ -1435,6 +1442,19 @@ def _split_overlong_segment(segment: str, max_chars: int) -> list[str]:
     return result
 
 
+def _split_overlong_in_run(parts: list[str], max_chars: int) -> list[str]:
+    """对同组文本段做超长二次拆分；动作/JSON/Markdown 等受保护段保持完整。"""
+    if max_chars <= 0:
+        return parts
+    split_parts: list[str] = []
+    for segment in parts:
+        if len(segment) > max_chars and not _is_unsplittable_segment(segment):
+            split_parts.extend(_split_overlong_segment(segment, max_chars))
+        else:
+            split_parts.append(segment)
+    return split_parts
+
+
 def stabilize_segment_lengths(
     segments: list[str],
     *,
@@ -1442,18 +1462,8 @@ def stabilize_segment_lengths(
     max_chars_per_segment: int | str = 0,
 ) -> list[str]:
     """拆分超长分段并重新应用最大分段数限制，保留模型已给出的边界。"""
-    try:
-        max_segs = int(max_segments) if max_segments is not None else 0
-    except (ValueError, TypeError):
-        max_segs = 0
-    try:
-        max_chars = (
-            int(max_chars_per_segment)
-            if max_chars_per_segment is not None
-            else 0
-        )
-    except (ValueError, TypeError):
-        max_chars = 0
+    max_segs = _as_nonneg_int(max_segments)
+    max_chars = _as_nonneg_int(max_chars_per_segment)
 
     normalized = normalize_segments(segments, max_segments=0)
     if not normalized:
@@ -1477,15 +1487,7 @@ def stabilize_segment_lengths(
         if run_kind == "protected":
             stabilized.extend(parts)
             continue
-        if max_chars > 0:
-            split_parts: list[str] = []
-            for segment in parts:
-                if len(segment) > max_chars:
-                    split_parts.extend(_split_overlong_segment(segment, max_chars))
-                else:
-                    split_parts.append(segment)
-            parts = split_parts
-        stabilized.extend(parts)
+        stabilized.extend(_split_overlong_in_run(parts, max_chars))
     stabilized = _merge_to_global_max(stabilized, max_segs, max_chars)
     stabilized = _force_merge_to_max_segments(stabilized, max_segs, max_chars)
     return stabilized
@@ -1542,10 +1544,7 @@ def parse_segments_from_model_output(
     max_chars_per_segment: int | str = 0,
 ) -> list[str]:
     """解析模型分段输出。强类型防御机制包装。"""
-    try:
-        max_segs = int(max_segments) if max_segments is not None else 0
-    except (ValueError, TypeError):
-        max_segs = 0
+    max_segs = _as_nonneg_int(max_segments)
         
     try:
         cleaned = strip_thinking_content(raw_text).strip()
@@ -1636,12 +1635,13 @@ def parse_segments_from_model_output(
         else:
             final_merged.append(pending_leading)
 
-    if max_chars_per_segment:
-        final_merged = stabilize_segment_lengths(
-            final_merged,
-            max_segments=max_segs,
-            max_chars_per_segment=max_chars_per_segment,
-        )
+    # 段数硬上限无条件兜底：max_chars=0 时 stabilize 只做段数合并，
+    # 不做超长拆分，保证 max_segments 在任何参数组合下都生效。
+    final_merged = stabilize_segment_lengths(
+        final_merged,
+        max_segments=max_segs,
+        max_chars_per_segment=max_chars_per_segment,
+    )
 
     return safe_escape_segments(final_merged)
 
@@ -1697,18 +1697,8 @@ def local_fallback_split(
     max_chars_per_segment: int | str = 0,
 ) -> list[str]:
     """终极自愈兜底：本地纯逻辑高精切分，保护 JSON/Markdown 块并平衡长度。"""
-    try:
-        max_segments = int(max_segs) if max_segs is not None else 0
-    except (ValueError, TypeError):
-        max_segments = 0
-    try:
-        max_chars = (
-            int(max_chars_per_segment)
-            if max_chars_per_segment is not None
-            else 0
-        )
-    except (ValueError, TypeError):
-        max_chars = 0
+    max_segments = _as_nonneg_int(max_segs)
+    max_chars = _as_nonneg_int(max_chars_per_segment)
 
     cleaned = strip_thinking_content(raw_text)
     if not cleaned:
@@ -1751,20 +1741,9 @@ def local_fallback_split(
         if run_kind == "protected":
             packed.extend(parts)
             continue
-        if max_chars > 0:
-            split_parts: list[str] = []
-            for segment in parts:
-                if (
-                    len(segment) > max_chars
-                    and not _is_unsplittable_segment(segment)
-                ):
-                    split_parts.extend(_split_overlong_segment(segment, max_chars))
-                else:
-                    split_parts.append(segment)
-            parts = split_parts
         packed.extend(
             pack_segments_to_target(
-                parts,
+                _split_overlong_in_run(parts, max_chars),
                 target,
                 max_segments=max_segments,
                 max_chars_per_segment=max_chars,

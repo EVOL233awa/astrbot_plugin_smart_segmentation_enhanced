@@ -12,7 +12,6 @@ from segmentation import (
     has_protected_block,
     is_non_natural_language,
     is_markdown_document,
-    is_markdown_heavy,
     local_fallback_split,
     mask_pipe_in_text,
     normalize_content_key,
@@ -882,7 +881,6 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
             "- 项目二\n\n"
             "> 引用第一句。引用第二句。"
         )
-        self.assertTrue(is_markdown_heavy(text))
         self.assertTrue(is_markdown_document(text))
         segments = local_fallback_split(text, 12, 180)
         self.assertEqual(segments, [text])
