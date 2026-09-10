@@ -68,7 +68,9 @@
 
 > 💡 **使用建议**：建议关闭 AstrBot 内置的 `platform_settings.segmented_reply.enable`，避免其与本插件产生重复分段。
 
-> ⚠️ **平台限制（v1.4.0 已知问题）**：`temperature` 与 `max_tokens` 依赖宿主 `Context.llm_generate` 的 kwargs 透传，AstrBot v4.27.2 的 `_prepare_chat_payload` 会丢弃这两个参数（按 provider 默认值发出）。属平台层缺陷，待宿主修复后自动生效；分段质量对这两个参数不敏感。`timeout_seconds` 与其余配置不受影响。
+> ⚠️ **平台限制（插件已知问题）**：`temperature` 与 `max_tokens` 依赖宿主 `Context.llm_generate` 的 kwargs 透传，AstrBot 的 `_prepare_chat_payload` 会丢弃这两个参数（按 provider 默认值发出）。属平台层缺陷，待宿主修复后自动生效；分段质量对这两个参数不敏感。`timeout_seconds` 与其余配置不受影响。
+>
+> ✅ **修复方案（推荐）**：该缺陷现可由配套插件 [**astrbot_plugin_astrbot_tweaks**](https://github.com/EVOL233awa/astrbot_plugin_astrbot_tweaks)（Astrbot Tweaks）修复。在 WebUI 中开启其 `llm_kwargs_passthrough` 开关（默认关闭）后，插件会在 provider 发送前把白名单内显式传入的参数（默认 `temperature`、`max_tokens`）重新写回请求，并覆盖 `custom_extra_body` 中的同名配置，使本插件的 `temperature` / `max_tokens` 真正生效；白名单可用 `llm_kwargs_allowlist` 扩展至 `top_p`、`reasoning_effort` 等同类参数。该插件不修改 AstrBot 本体源码，卸载或重载时自动恢复原始方法。若暂不安装该插件，本插件仍按 provider 默认值发送这两个参数。
 
 ## 架构说明
 

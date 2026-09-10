@@ -1,3 +1,4 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Segoe UI, Helvetica, Arial, sans-serif", "fontSize": "16px", "background": "#0d1117", "primaryColor": "#161b22", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#30363d", "lineColor": "#8b949e", "textColor": "#e6edf3", "edgeLabelBackground": "#0d1117", "clusterBkg": "#161b22", "clusterBorder": "#30363d", "titleColor": "#e6edf3"}}}%%
 flowchart TB
     subgraph AstrBot["AstrBot 事件层"]
         Hook1["on_llm_response（预计算）"]
@@ -48,3 +49,11 @@ flowchart TB
     Hook3 --> Pending
     Pending --> Scheduler
     Scheduler --> Chain
+
+    classDef node fill:#161b22,stroke:#30363d,stroke-width:1.5px,color:#e6edf3,rx:6,ry:6;
+    class Hook1,Hook2,Hook3,Config,Cache,Locks,Pending,Scheduler,Clean,Detect,PipeMask,LLM,Reconstruct,Leading,Local,Stabilize,Provider,Chain node;
+
+    style AstrBot fill:#162C4A,stroke:#2f6feb,color:#79c0ff
+    style Main fill:#2E2648,stroke:#8957e5,color:#d2a8ff
+    style Engine fill:#183624,stroke:#2ea043,color:#7ee787
+    style External fill:#382F19,stroke:#bb8009,color:#e3b341
