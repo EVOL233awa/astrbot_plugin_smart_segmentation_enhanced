@@ -83,6 +83,7 @@
 - `after_message_sent` 在首段发送成功后启动剩余段异步补发。
 - 缓存未命中时，`on_decorating_result` 会调用本地高精切分兜底。
 - heavy 清洗使用内容保全式正则，保留链接 URL、行内代码与 JSON/代码块正文。
+- 分段引擎按职责拆分为 `segmentation/` 包：`core`（基础判断、归一化、哈希）、`protection`（结构保护与安全转义）、`markdown_clean`（Markdown 清洗）、`boundary`（候选切点与括号边界）、`packing`（目标长度与打包约束）、`local_split`（本地切分编排）、`delivery`（发送延迟）、`model_output`（LLM 协议、解析与重建）；`__init__.py` 作为公开 API 门面，导入路径保持不变。
 
 ## 技术实现与 AI 辅助说明
 
@@ -94,7 +95,9 @@
 ## 测试
 
 - 从插件根目录运行全部测试：`python -m unittest discover -s tests -v`
-- 或直接运行：`python tests/test_segmentation.py`
+- 或用 pytest：`python -m pytest tests -q`
+- 测试按模块分类，可单独运行某个模块：`python -m unittest tests.test_boundary -v`
+  （模块文件：`test_core`、`test_protection`、`test_markdown_clean`、`test_boundary`、`test_packing`、`test_local_split`、`test_model_output`）
 
 ## 许可证
 

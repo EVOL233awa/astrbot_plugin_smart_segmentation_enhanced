@@ -14,7 +14,7 @@ flowchart TB
         Scheduler["异步补发调度"]
     end
 
-    subgraph Engine["segmentation.py 分段引擎"]
+    subgraph Engine["segmentation/ 分段引擎"]
         Clean["Markdown 清洗 off/light/heavy"]
         Detect["检测：use_local_only / 非自然语言 / 受保护块"]
         PipeMask["管道符掩码：先掩码正文 |，解析后回填"]
