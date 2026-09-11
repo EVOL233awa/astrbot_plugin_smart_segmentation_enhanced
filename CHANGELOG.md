@@ -4,6 +4,13 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [Unreleased]
+
+### Changed
+- **模块化重构（行为等价）**：`segmentation.py`（1755 行、73 个顶层函数）拆分为 `segmentation/` 包，按职责划分为 `core`、`protection`、`markdown_clean`、`boundary`、`packing`、`local_split`、`delivery`、`model_output` 八个模块，依赖方向单向（`markdown_clean → protection → core`，`boundary`/`packing → local_split → model_output`）。`__init__.py` 作为公开 API 门面，插件与测试原有的导入路径与名字保持不变。
+- **测试按模块分类**：原 `tests/test_segmentation.py` 的 63 个用例迁移到 `test_core`、`test_protection`、`test_markdown_clean`、`test_boundary`、`test_packing`、`test_local_split`、`test_model_output` 七个文件，断言与方法名保持原样，辅助方法跟随使用者。
+
+---
 ## [1.4.0] - 2026-09-02
 
 ### Fixed
