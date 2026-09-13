@@ -72,3 +72,135 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStageFourStageOptions(unittest.TestCase):
+    """阶段 4：短尾合并、llm 边界过滤与强制再切分、schema 条件显示。"""
+
+    def test_merge_short_tail_segment_merges_tail(self):
+        """末段不超过阈值且两段都是普通文本时并入前一段。"""
+        from segmentation import merge_short_tail_segment
+
+        self.assertEqual(
+            merge_short_tail_segment(["第一段话说完了。", "好。"], 0, 2),
+            ["第一段话说完了。好。"],
+        )
+        # 超过阈值不合并
+        self.assertEqual(
+            merge_short_tail_segment(["第一段话说完了。", "明白。"], 0, 2),
+            ["第一段话说完了。", "明白。"],
+        )
+
+    def test_merge_short_tail_segment_guards(self):
+        """原子段/受保护块豁免；合并后超 max_chars 放弃。"""
+        from segmentation import merge_short_tail_segment
+
+        # 合并后超过 max_chars
+        self.assertEqual(
+            merge_short_tail_segment(
+                ["这是一条已经很长的消息内容了。", "好。"], 10, 2
+            ),
+            ["这是一条已经很长的消息内容了。", "好。"],
+        )
+        # 尾段是动作段（原子）
+        self.assertEqual(
+            merge_short_tail_segment(["第一段话说完了。", "（笑）"], 0, 3),
+            ["第一段话说完了。", "（笑）"],
+        )
+        # 尾段是受保护块
+        self.assertEqual(
+            merge_short_tail_segment(
+                ["第一段话说完了。", "```\ncode\n```"], 0, 12
+            ),
+            ["第一段话说完了。", "```\ncode\n```"],
+        )
+        # 段数不足或阈值非正
+        self.assertEqual(merge_short_tail_segment(["好。"], 0, 2), ["好。"])
+        self.assertEqual(
+            merge_short_tail_segment(["第一段。", "好。"], 0, 0),
+            ["第一段。", "好。"],
+        )
+
+    def test_apply_no_split_boundaries(self):
+        """边界后紧跟保护词时合回相邻两段；受保护块与超限豁免。"""
+        from segmentation import apply_no_split_boundaries
+
+        self.assertEqual(
+            apply_no_split_boundaries(
+                ["版本号是 3.2。", "Provider 当前在线"], ["Provider"]
+            ),
+            ["版本号是 3.2。Provider 当前在线"],
+        )
+        # 合并后超过 max_chars 保持原边界
+        self.assertEqual(
+            apply_no_split_boundaries(
+                ["版本号是 3.2。", "Provider 当前在线"], ["Provider"], max_chars=10
+            ),
+            ["版本号是 3.2。", "Provider 当前在线"],
+        )
+        # 前段是受保护块不合并
+        self.assertEqual(
+            apply_no_split_boundaries(
+                ["```\ncode\n```", "Provider 后续"], ["Provider"]
+            ),
+            ["```\ncode\n```", "Provider 后续"],
+        )
+
+    def test_apply_force_split_to_segments(self):
+        """非受保护片段按符号再切分；受保护块与原子段保持完整。"""
+        from segmentation import apply_force_split_to_segments
+
+        self.assertEqual(
+            apply_force_split_to_segments(["前半句|后半句"], ["|"]),
+            ["前半句|", "后半句"],
+        )
+        self.assertEqual(
+            apply_force_split_to_segments(["```\na|b\n```"], ["|"]),
+            ["```\na|b\n```"],
+        )
+        self.assertEqual(
+            apply_force_split_to_segments(["（挥手）"], ["|"]),
+            ["（挥手）"],
+        )
+
+    def test_conf_schema_stage_four_keys(self):
+        """schema：短尾合并开关/阈值（条件显示）与两个列表键。"""
+        import json
+
+        schema_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "_conf_schema.json",
+        )
+        with open(schema_path, encoding="utf-8") as handle:
+            schema = json.load(handle)
+
+        switch = schema["merge_short_tail"]
+        self.assertEqual(switch["type"], "bool")
+        self.assertIs(switch["default"], False)
+        self.assertNotIn("condition", switch)
+
+        threshold = schema["short_tail_threshold"]
+        self.assertEqual(threshold["type"], "int")
+        self.assertEqual(threshold["default"], 2)
+        self.assertEqual(threshold["condition"], {"merge_short_tail": True})
+        self.assertEqual(threshold["slider"], {"min": 1, "max": 10, "step": 1})
+
+        for key in ("no_split_around", "force_split_symbols"):
+            entry = schema[key]
+            self.assertEqual(entry["type"], "list", key)
+            self.assertEqual(entry["default"], [], key)
+
+
+class TestEllipsisLeadingSegment(unittest.TestCase):
+    """2026-09-13 用户裁定：省略号开头的段不并入前段（pack 层）。"""
+
+    def test_ellipsis_leading_segment_not_merged_back(self):
+        from segmentation import pack_segments_to_target
+
+        packed = pack_segments_to_target(
+            ["开会就到这里。", "……明天记得带材料。"],
+            100,
+            max_segments=12,
+            max_chars_per_segment=180,
+        )
+        self.assertEqual(packed, ["开会就到这里。", "……明天记得带材料。"])
