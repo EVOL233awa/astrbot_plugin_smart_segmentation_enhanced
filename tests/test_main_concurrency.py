@@ -17,7 +17,7 @@ from tests.conftest import (  # noqa: E402,F401
     Plain,
 )
 
-from astrbot_plugin_smart_segmentation.main import (  # noqa: E402
+from astrbot_plugin_smart_segmentation_enhanced.main import (  # noqa: E402
     _PREPARED_EXTRA_KEY,
     PendingFollowUp,
     SmartSegmentationPlugin,
