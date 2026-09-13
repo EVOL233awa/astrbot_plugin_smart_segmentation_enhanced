@@ -6,6 +6,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from segmentation import (
+    _PAUSE_BREAK_MIN_CHARS,
     local_fallback_split,
     stabilize_segment_lengths,
 )
@@ -98,6 +99,70 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         self.assertLessEqual(len(stabilized), 12)
         self.assertEqual("".join(stabilized).replace("\n", ""), "".join(segments))
 
+    def test_ellipsis_pause_min_chars_configurable(self):
+        """验证省略号停顿独立阈值可经参数配置：短停顿归属随阈值变化。"""
+        # 「啊……」共 3 字符：阈值 3 时独立成段，阈值 4 时留在原句。
+        text = "（动作）啊……等一下！"
+        with_pause_independent = local_fallback_split(
+            text, 12, 180, pause_min_chars=3
+        )
+        with_pause_merged = local_fallback_split(
+            text, 12, 180, pause_min_chars=4
+        )
+        self.assertIn("啊……", with_pause_independent)
+        self.assertNotIn("啊……等一下！", with_pause_independent)
+        self.assertIn("啊……等一下！", with_pause_merged)
+
+    def test_conf_schema_ellipsis_pause_key_matches_code_default(self):
+        """验证 schema 的省略号阈值键存在，且默认值与代码层兜底一致。"""
+        import json
+
+        schema_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "_conf_schema.json",
+        )
+        with open(schema_path, encoding="utf-8") as handle:
+            schema = json.load(handle)
+        entry = schema.get("ellipsis_pause_min_chars")
+        self.assertIsInstance(entry, dict)
+        self.assertEqual(entry.get("type"), "int")
+        self.assertEqual(entry.get("default"), 4)
+        self.assertEqual(entry.get("default"), _PAUSE_BREAK_MIN_CHARS)
+        self.assertEqual(entry.get("slider", {}).get("min"), 2)
+        self.assertEqual(entry.get("slider", {}).get("max"), 10)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStageFourSplitOptions(unittest.TestCase):
+    """阶段 4：短尾合并的端到端行为与默认关闭不变性。"""
+
+    def test_short_tail_merge_enabled_and_disabled(self):
+        """默认关闭时分段不变；开启后末段并入前一段，阈值生效。"""
+        text = "今天上午的日程已经排满了，主要有三个会议连着开。明白。"
+        default = local_fallback_split(text, 8, 180)
+        self.assertEqual(
+            default,
+            ["今天上午的日程已经排满了，主要有三个会议连着开。", "明白。"],
+        )
+        merged = local_fallback_split(
+            text, 8, 180, merge_short_tail=True, short_tail_threshold=3
+        )
+        self.assertEqual(
+            merged, ["今天上午的日程已经排满了，主要有三个会议连着开。明白。"]
+        )
+        # 阈值 2 时「明白。」(3 字符) 不并入
+        kept = local_fallback_split(
+            text, 8, 180, merge_short_tail=True, short_tail_threshold=2
+        )
+        self.assertEqual(kept, default)
+
+    def test_short_tail_merge_skips_action_tail(self):
+        """尾段是动作段时即使开启短尾合并也保持独立。"""
+        text = "今天上午的日程已经排满了，主要有三个会议连着开。（点头）"
+        segments = local_fallback_split(
+            text, 8, 180, merge_short_tail=True, short_tail_threshold=5
+        )
+        self.assertEqual(segments[-1], "（点头）")
