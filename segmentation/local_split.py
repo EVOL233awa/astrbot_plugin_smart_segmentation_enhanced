@@ -5,12 +5,28 @@ import re
 
 from .core import _as_nonneg_int, is_non_natural_language, normalize_segments, strip_thinking_content
 from .protection import has_protected_block, is_markdown_document, safe_escape_segments, split_protected_blocks
-from .boundary import _split_plain_text
-from .packing import _force_merge_to_max_segments, _hard_split_overlong, _is_unsplittable_segment, _merge_to_global_max, compute_target_segment_length, pack_segments_to_target
+from .boundary import _PAUSE_BREAK_MIN_CHARS, _force_split_by_symbols, _split_plain_text
+from .packing import (
+    _force_merge_to_max_segments,
+    _hard_split_overlong,
+    _is_unsplittable_segment,
+    _merge_to_global_max,
+    compute_target_segment_length,
+    merge_short_tail_segment,
+    pack_segments_to_target,
+)
 
-def _split_overlong_segment(segment: str, max_chars: int) -> list[str]:
+def _split_overlong_segment(
+    segment: str,
+    max_chars: int,
+    pause_min_chars: int = _PAUSE_BREAK_MIN_CHARS,
+) -> list[str]:
     """将单条超长消息按标点或空白二次拆分，保留原始标点。"""
-    sub_segments = local_fallback_split(segment, 0)
+    sub_segments = local_fallback_split(
+        segment,
+        0,
+        pause_min_chars=pause_min_chars,
+    )
     if len(sub_segments) <= 1:
         return _hard_split_overlong(segment, max_chars)
 
@@ -26,14 +42,20 @@ def _split_overlong_segment(segment: str, max_chars: int) -> list[str]:
     return result
 
 
-def _split_overlong_in_run(parts: list[str], max_chars: int) -> list[str]:
+def _split_overlong_in_run(
+    parts: list[str],
+    max_chars: int,
+    pause_min_chars: int = _PAUSE_BREAK_MIN_CHARS,
+) -> list[str]:
     """对同组文本段做超长二次拆分；动作/JSON/Markdown 等受保护段保持完整。"""
     if max_chars <= 0:
         return parts
     split_parts: list[str] = []
     for segment in parts:
         if len(segment) > max_chars and not _is_unsplittable_segment(segment):
-            split_parts.extend(_split_overlong_segment(segment, max_chars))
+            split_parts.extend(
+                _split_overlong_segment(segment, max_chars, pause_min_chars)
+            )
         else:
             split_parts.append(segment)
     return split_parts
@@ -44,6 +66,7 @@ def stabilize_segment_lengths(
     *,
     max_segments: int | str = 0,
     max_chars_per_segment: int | str = 0,
+    pause_min_chars: int = _PAUSE_BREAK_MIN_CHARS,
 ) -> list[str]:
     """拆分超长分段并重新应用最大分段数限制，保留模型已给出的边界。"""
     max_segs = _as_nonneg_int(max_segments)
@@ -71,7 +94,7 @@ def stabilize_segment_lengths(
         if run_kind == "protected":
             stabilized.extend(parts)
             continue
-        stabilized.extend(_split_overlong_in_run(parts, max_chars))
+        stabilized.extend(_split_overlong_in_run(parts, max_chars, pause_min_chars))
     stabilized = _merge_to_global_max(stabilized, max_segs, max_chars)
     stabilized = _force_merge_to_max_segments(stabilized, max_segs, max_chars)
     return stabilized
@@ -81,6 +104,7 @@ def expand_under_split_natural_segments(
     segments: list[str],
     *,
     max_segments: int | str = 0,
+    pause_min_chars: int = _PAUSE_BREAK_MIN_CHARS,
 ) -> list[str]:
     """把模型漏切的自然语言长段按本地句末边界补齐，避免多个句子粘连。"""
     expanded = []
@@ -98,7 +122,11 @@ def expand_under_split_natural_segments(
             paragraph = paragraph.strip()
             if not paragraph:
                 continue
-            local_segments = local_fallback_split(paragraph, 0)
+            local_segments = local_fallback_split(
+                paragraph,
+                0,
+                pause_min_chars=pause_min_chars,
+            )
             if len(local_segments) > 1:
                 expanded.extend(local_segments)
             else:
@@ -110,8 +138,19 @@ def local_fallback_split(
     raw_text: str,
     max_segs: int,
     max_chars_per_segment: int | str = 0,
+    pause_min_chars: int = _PAUSE_BREAK_MIN_CHARS,
+    *,
+    force_split_symbols: list[str] | None = None,
+    no_split_around: list[str] | None = None,
+    merge_short_tail: bool = False,
+    short_tail_threshold: int = 2,
 ) -> list[str]:
-    """终极自愈兜底：本地纯逻辑高精切分，保护 JSON/Markdown 块并平衡长度。"""
+    """终极自愈兜底：本地纯逻辑高精切分，保护 JSON/Markdown 块并平衡长度。
+
+    force_split_symbols 非空时先按符号强制预切，每个片段独立执行正常
+    切分（§5.5）；no_split_around 非空时紧跟保护词的标点切点不参与选点
+    （§5.4）；merge_short_tail 开启时末段过短并入前一段（§5.3）。
+    """
     max_segments = _as_nonneg_int(max_segs)
     max_chars = _as_nonneg_int(max_chars_per_segment)
 
@@ -133,7 +172,19 @@ def local_fallback_split(
     all_text_parts: list[str] = []
     for kind, chunk in split_protected_blocks(cleaned):
         if kind == "text":
-            parts = _split_plain_text(chunk)
+            if force_split_symbols:
+                # 强制预切的片段各自独立成 run 打包，防止被打包逻辑
+                # 按目标长度合并回去；合并只留给硬上限兜底（§5.5）。
+                if text_parts:
+                    runs.append(("text", text_parts))
+                    text_parts = []
+                for piece in _force_split_by_symbols(chunk, force_split_symbols):
+                    parts = _split_plain_text(piece, pause_min_chars)
+                    if parts:
+                        runs.append(("text", parts))
+                        all_text_parts.extend(parts)
+                continue
+            parts = _split_plain_text(chunk, pause_min_chars)
             text_parts.extend(parts)
             all_text_parts.extend(parts)
         else:
@@ -158,13 +209,16 @@ def local_fallback_split(
             continue
         packed.extend(
             pack_segments_to_target(
-                _split_overlong_in_run(parts, max_chars),
+                _split_overlong_in_run(parts, max_chars, pause_min_chars),
                 target,
                 max_segments=max_segments,
                 max_chars_per_segment=max_chars,
+                no_split_around=no_split_around,
             )
         )
     if max_segments > 0:
         packed = _merge_to_global_max(packed, max_segments, max_chars)
         packed = _force_merge_to_max_segments(packed, max_segments, max_chars)
+    if merge_short_tail:
+        packed = merge_short_tail_segment(packed, max_chars, short_tail_threshold)
     return safe_escape_segments(packed)
