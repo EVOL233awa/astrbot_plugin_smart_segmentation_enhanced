@@ -215,12 +215,16 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
             fallback_text=original,
             max_segments=12,
             max_chars_per_segment=180,
+            # 显式固定阈值 3：本用例验证省略号停顿独立语义，不随默认阈值漂移。
+            pause_min_chars=3,
         )
         self.assertEqual(
             segments,
             [
                 "（被用户轻轻拍了一下肩膀，助手愣住，把耳机摘下）",
-                "啊……等一下！",
+                # 2026-09-12 语义裁定：省略号结尾的停顿段独立成段。
+                "啊……",
+                "等一下！",
             ],
         )
 
@@ -317,14 +321,18 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
             fallback_text=original,
             max_segments=12,
             max_chars_per_segment=180,
+            # 显式固定阈值 3：本用例验证省略号停顿独立语义，不随默认阈值漂移。
+            pause_min_chars=3,
         )
-        self.assertEqual(len(segments), 7)
+        # 2026-09-12 语义裁定：句中省略号结尾的停顿段独立成段，
+        # 段数 7 → 9（「嗯……」「无论是简单的话题……」各自独立）。
+        self.assertEqual(len(segments), 9)
         self.assertEqual(
-            segments[2],
+            segments[3],
             '"什么都可以"——这句话的解读方式，可是比说明文档还要丰富哦？',
         )
-        self.assertEqual(segments[5], "……哎呀，用户的反应好像变得更严肃了？")
-        self.assertFalse(any('\n\n"' in seg or seg.endswith("……") for seg in segments))
+        self.assertEqual(segments[7], "……哎呀，用户的反应好像变得更严肃了？")
+        self.assertFalse(any('\n\n"' in seg for seg in segments))
 
     def test_paragraph_leading_punctuation_stays_with_next_segment(self):
         """验证普通段首的引号、省略号和问叹号不会粘到前一段末尾。"""
