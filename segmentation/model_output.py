@@ -8,8 +8,19 @@ from typing import Any
 
 from .core import _LEADING_PUNCTUATION_RE, _SEGMENT_LEADING_PUNCT_CHARS, _as_nonneg_int, is_action_only_text, is_kaomoji_or_pure_punct, is_leading_punctuation, normalize_content_key, normalize_segments, strip_thinking_content
 from .protection import safe_escape_segments
-from .boundary import _LEFT_BOUNDARY_CHARS, _SENTENCE_BOUNDARY_CHARS, _top_level_bracket_spans, split_segments_at_bracket_boundaries
+from .boundary import (
+    _LEFT_BOUNDARY_CHARS,
+    _PAUSE_BREAK_MIN_CHARS,
+    _SENTENCE_BOUNDARY_CHARS,
+    _top_level_bracket_spans,
+    split_segments_at_bracket_boundaries,
+)
 from .local_split import expand_under_split_natural_segments, local_fallback_split, stabilize_segment_lengths
+from .packing import (
+    apply_force_split_to_segments,
+    apply_no_split_boundaries,
+    merge_short_tail_segment,
+)
 
 STYLE_GUIDES = {
     "natural": "像和朋友微信聊天一样自然地分条发送。有的消息短有的长，节奏随意。",
@@ -284,49 +295,78 @@ def build_segmentation_prompt(text: str, style: str, max_segments: int) -> str:
 {text}"""
 
 
+def parse_raw_model_segments(
+    raw_text: str,
+    *,
+    fallback_text: str,
+) -> list[str]:
+    """把模型原始输出解析为清洗后的分段（缝合颜文字 + 幻觉检测）。
+
+    parse_segments_from_model_output 与锚点路径共用的解析前置；模型输出
+    复读 few-shot 示例时抛 ValueError，由调用方决定降级方式。
+    """
+    cleaned = strip_thinking_content(raw_text).strip()
+
+    if "|" in cleaned:
+        raw_segs = re.split(r"\s*\|\s*", cleaned)
+        segments = [seg.strip() for seg in raw_segs if seg.strip()]
+    elif cleaned.startswith("[") and cleaned.endswith("]"):
+        json_text = extract_json_array_text(cleaned)
+        segments = robust_json_loads(json_text)
+    else:
+        segments = [line.strip() for line in cleaned.splitlines() if line.strip()]
+
+    normalized = normalize_segments(segments, max_segments=0)
+
+    # 防御大模型切碎颜文字的后处理缝合
+    final_segs = []
+    for seg in normalized:
+        if final_segs and is_kaomoji_or_pure_punct(seg):
+            final_segs[-1] += seg
+        else:
+            final_segs.append(seg)
+    normalized = final_segs
+
+    # 复读 Few-shot 幻觉检测与降级机制
+    joined_result = "".join(normalized)
+    hallucination_keywords = [
+        "今天发工资了",
+        "要不要一起去吃大餐",
+        "今天天气真好",
+        "先按计划执行",
+    ]
+    if any(kw in joined_result and kw not in fallback_text for kw in hallucination_keywords):
+        raise ValueError("Detected few-shot hallucination")
+    return normalized
+
+
 def parse_segments_from_model_output(
     raw_text: str,
     *,
     fallback_text: str,
     max_segments: int | str,
     max_chars_per_segment: int | str = 0,
+    pause_min_chars: int = _PAUSE_BREAK_MIN_CHARS,
+    force_split_symbols: list[str] | None = None,
+    no_split_around: list[str] | None = None,
+    merge_short_tail: bool = False,
+    short_tail_threshold: int = 2,
 ) -> list[str]:
     """解析模型分段输出。强类型防御机制包装。"""
     max_segs = _as_nonneg_int(max_segments)
-        
+
+    local_kwargs: dict[str, Any] = {
+        "force_split_symbols": force_split_symbols,
+        "no_split_around": no_split_around,
+        "merge_short_tail": merge_short_tail,
+        "short_tail_threshold": short_tail_threshold,
+    }
+
     try:
-        cleaned = strip_thinking_content(raw_text).strip()
-        
-        if "|" in cleaned:
-            raw_segs = re.split(r"\s*\|\s*", cleaned)
-            segments = [seg.strip() for seg in raw_segs if seg.strip()]
-        elif cleaned.startswith("[") and cleaned.endswith("]"):
-            json_text = extract_json_array_text(cleaned)
-            segments = robust_json_loads(json_text)
-        else:
-            segments = [line.strip() for line in cleaned.splitlines() if line.strip()]
-            
-        normalized = normalize_segments(segments, max_segments=0)
-        
-        # 防御大模型切碎颜文字的后处理缝合
-        final_segs = []
-        for seg in normalized:
-            if final_segs and is_kaomoji_or_pure_punct(seg):
-                final_segs[-1] += seg
-            else:
-                final_segs.append(seg)
-        normalized = final_segs
-        
-        # 复读 Few-shot 幻觉检测与降级机制
-        joined_result = "".join(normalized)
-        hallucination_keywords = [
-            "今天发工资了",
-            "要不要一起去吃大餐",
-            "今天天气真好",
-            "先按计划执行",
-        ]
-        if any(kw in joined_result and kw not in fallback_text for kw in hallucination_keywords):
-            raise ValueError("Detected few-shot hallucination")
+        normalized = parse_raw_model_segments(
+            raw_text,
+            fallback_text=fallback_text,
+        )
 
         reconstructed = reconstruct_segments_from_model_output(
             normalized,
@@ -338,27 +378,38 @@ def parse_segments_from_model_output(
                 fallback_text,
                 max_segs,
                 max_chars_per_segment,
+                pause_min_chars=pause_min_chars,
+                **local_kwargs,
             )
         if len(reconstructed) == 1 and len(normalized) > 1:
             return local_fallback_split(
                 fallback_text,
                 max_segs,
                 max_chars_per_segment,
+                pause_min_chars=pause_min_chars,
+                **local_kwargs,
             )
         normalized = expand_under_split_natural_segments(
             reconstructed,
             max_segments=0,
+            pause_min_chars=pause_min_chars,
         )
-            
+
     except Exception:
         fallback = strip_thinking_content(fallback_text).strip()
-        return local_fallback_split(fallback, max_segs, max_chars_per_segment)
-        
+        return local_fallback_split(
+            fallback,
+            max_segs,
+            max_chars_per_segment,
+            pause_min_chars=pause_min_chars,
+            **local_kwargs,
+        )
+
     split_result = split_segments_at_bracket_boundaries(
         normalized,
         max_segments=0,
     )
-    
+
     # 防止大模型或括号切分将颜文字剥离；动作段后的纯标点先缓存，
     # 再归属下一个内容段，避免粘回动作后被后续打包与说话内容重新合并。
     final_merged = []
@@ -383,12 +434,29 @@ def parse_segments_from_model_output(
         else:
             final_merged.append(pending_leading)
 
+    # §5.4：重建边界后紧跟保护词的软约束过滤，先于强制再切分执行，
+    # 保证强制切点（更高优先级）不会被边界过滤合回。
+    final_merged = apply_no_split_boundaries(
+        final_merged,
+        no_split_around,
+        max_chars=_as_nonneg_int(max_chars_per_segment),
+    )
+    # §5.5：对非受保护片段按强制符号做一次确定性再切分（仍只调用一次 LLM）。
+    final_merged = apply_force_split_to_segments(final_merged, force_split_symbols)
+
     # 段数硬上限无条件兜底：max_chars=0 时 stabilize 只做段数合并，
     # 不做超长拆分，保证 max_segments 在任何参数组合下都生效。
     final_merged = stabilize_segment_lengths(
         final_merged,
         max_segments=max_segs,
         max_chars_per_segment=max_chars_per_segment,
+        pause_min_chars=pause_min_chars,
     )
+    if merge_short_tail:
+        final_merged = merge_short_tail_segment(
+            final_merged,
+            _as_nonneg_int(max_chars_per_segment),
+            short_tail_threshold,
+        )
 
     return safe_escape_segments(final_merged)
