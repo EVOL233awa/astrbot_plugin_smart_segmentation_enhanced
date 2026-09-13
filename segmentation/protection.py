@@ -183,8 +183,15 @@ def _has_structure_after(lines: list[str], index: int) -> bool:
     return False
 
 
-def _markdown_region_ranges(lines: list[str]) -> list[tuple[int, int]]:
-    """Find contiguous Markdown regions from first to last structural line."""
+def _markdown_region_ranges(
+    lines: list[str],
+    merge_adjacent_markdown: bool = True,
+) -> list[tuple[int, int]]:
+    """Find contiguous Markdown regions from first to last structural line.
+
+    merge_adjacent_markdown 为假时只消费单个结构单元，不把后续相邻的
+    Markdown 结构（间隔空行、标题后首段等）吸收进同一区域。
+    """
     ranges: list[tuple[int, int]] = []
     index = 0
     while index < len(lines):
@@ -193,33 +200,33 @@ def _markdown_region_ranges(lines: list[str]) -> list[tuple[int, int]]:
             continue
 
         start = index
-        scan = index
-        first_is_heading = (
-            _MD_HEADING_RE.match(lines[start].strip()) is not None
-        )
-        last_end = _consume_markdown_block(lines, scan)
-        scan = last_end
-        first_non_blank_after_start = True
-        while True:
-            while scan < len(lines) and not lines[scan].strip():
-                scan += 1
-            if scan >= len(lines):
+        last_end = _consume_markdown_block(lines, index)
+        if merge_adjacent_markdown:
+            scan = last_end
+            first_is_heading = (
+                _MD_HEADING_RE.match(lines[start].strip()) is not None
+            )
+            first_non_blank_after_start = True
+            while True:
+                while scan < len(lines) and not lines[scan].strip():
+                    scan += 1
+                if scan >= len(lines):
+                    break
+                if _is_markdown_structural_line(lines[scan]):
+                    first_non_blank_after_start = False
+                    last_end = _consume_markdown_block(lines, scan)
+                    scan = last_end
+                    continue
+                if _has_structure_after(lines, scan):
+                    first_non_blank_after_start = False
+                    scan += 1
+                    continue
+                if first_is_heading and first_non_blank_after_start:
+                    scan += 1
+                    last_end = scan
+                    first_non_blank_after_start = False
+                    continue
                 break
-            if _is_markdown_structural_line(lines[scan]):
-                first_non_blank_after_start = False
-                last_end = _consume_markdown_block(lines, scan)
-                scan = last_end
-                continue
-            if _has_structure_after(lines, scan):
-                first_non_blank_after_start = False
-                scan += 1
-                continue
-            if first_is_heading and first_non_blank_after_start:
-                scan += 1
-                last_end = scan
-                first_non_blank_after_start = False
-                continue
-            break
 
         ranges.append((start, last_end))
         index = last_end
@@ -272,11 +279,19 @@ def _split_non_markdown_lines(lines: list[str]) -> list[tuple[str, str]]:
     return chunks
 
 
-def split_protected_blocks(text: str) -> list[tuple[str, str]]:
-    """Split text into protected JSON/Markdown blocks and ordinary text chunks."""
+def split_protected_blocks(
+    text: str,
+    merge_adjacent_markdown: bool = True,
+) -> list[tuple[str, str]]:
+    """Split text into protected JSON/Markdown blocks and ordinary text chunks.
+
+    merge_adjacent_markdown 控制连续 Markdown 结构是否合并为一个区域：
+    默认 True 保持现有行为；False 时每个结构单元独立成块，结构之间的
+    普通文字成为独立文本区间（供锚点路径细分使用，本地路径不用）。
+    """
     lines = text.splitlines()
     chunks: list[tuple[str, str]] = []
-    regions = _markdown_region_ranges(lines)
+    regions = _markdown_region_ranges(lines, merge_adjacent_markdown)
     cursor = 0
     for start, end in regions:
         if start > cursor:
