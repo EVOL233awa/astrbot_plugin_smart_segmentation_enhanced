@@ -1,7 +1,7 @@
 """共享测试基建：AstrBot 框架 fake 注入与通用桩件。
 
 pytest 在收集测试模块前自动加载本文件，任何测试模块在被收集前
-必须已完成 astrbot.* 假模块注入，`import astrbot_plugin_smart_segmentation.main`
+必须已完成 astrbot.* 假模块注入，`import astrbot_plugin_smart_segmentation_enhanced.main`
 才能脱离 AstrBot 宿主环境独立运行。
 """
 
