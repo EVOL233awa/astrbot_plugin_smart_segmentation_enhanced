@@ -7,16 +7,37 @@
   },
   "use_local_only": {
     "type": "bool",
-    "description": "仅使用本地高精度切分",
-    "hint": "开启后不调用分段模型，直接使用本地标点/括号规则切分，适合追求稳定输出或不想依赖模型。",
-    "default": false
+    "description": "（已弃用）仅使用本地高精度切分",
+    "hint": "此配置已由「发送引擎 segmenter」取代，界面不再显示；旧值会自动映射到 segmenter，无需手动处理。",
+    "default": true,
+    "invisible": true
+  },
+  "segmenter": {
+    "type": "string",
+    "description": "发送引擎",
+    "hint": "local 不调用分段模型，用本地标点/括号规则切分，稳定且零延迟；llm 调用分段模型拆分，更接近自然聊天节奏，切分后仍保留全部保护规则。",
+    "default": "local",
+    "options": [
+      "local",
+      "llm"
+    ]
+  },
+  "segmenter_migrated": {
+    "type": "bool",
+    "description": "发送引擎迁移标记",
+    "hint": "内部使用的一次性迁移标记，请勿手动修改。",
+    "default": false,
+    "invisible": true
   },
   "provider_id": {
     "type": "string",
     "description": "分段模型 Provider ID",
-    "hint": "留空使用当前会话正在使用的聊天模型；也可在此选择一个小模型专门用于分段。",
-    "default": "llama/qwen3.5-4b-q4kxl",
-    "_special": "select_provider"
+    "hint": "留空则使用当前会话正在使用的聊天模型；推荐另外配置一个小模型（如本地 Qwen3.5-4B 这类轻量模型）专门用于分段，避免占用主模型额度。",
+    "default": "",
+    "_special": "select_provider",
+    "condition": {
+      "segmenter": "llm"
+    }
   },
   "style": {
     "type": "string",
@@ -27,13 +48,16 @@
       "natural",
       "conservative",
       "active"
-    ]
+    ],
+    "condition": {
+      "segmenter": "llm"
+    }
   },
   "min_length": {
     "type": "int",
     "description": "最小分段长度",
     "hint": "回复文本短于该长度时不调用分段模型。",
-    "default": 12,
+    "default": 10,
     "slider": {
       "min": 0,
       "max": 200,
@@ -62,6 +86,49 @@
       "step": 10
     }
   },
+  "ellipsis_pause_min_chars": {
+    "type": "int",
+    "description": "省略号停顿独立成段的最小长度",
+    "hint": "按字符数计，每个 … 占 1 个字符（…… 即 2 个）。「让我再想想……」共 7 字符，达到该长度会独立成段；「嗯…」共 2 字符，这类更短的语气停顿留在原句。调大可减少短停顿碎段，调小可加强断续的说话节奏。",
+    "default": 4,
+    "slider": {
+      "min": 2,
+      "max": 10,
+      "step": 1
+    }
+  },
+  "merge_short_tail": {
+    "type": "bool",
+    "description": "末尾短消息并入上一条",
+    "hint": "打开后，最后一条消息如果只有一两个字（比如「嗯。」「好。」），会并进上一条一起发，不会单独蹦出一条碎消息。",
+    "default": false
+  },
+  "short_tail_threshold": {
+    "type": "int",
+    "description": "并入上一条的字数上限",
+    "hint": "最后一条消息不超过这个字数时才并入上一条。默认 2：「嗯。」「好。」会并进去，「明白。」「收到。」保持独立。",
+    "default": 2,
+    "slider": {
+      "min": 1,
+      "max": 10,
+      "step": 1
+    },
+    "condition": {
+      "merge_short_tail": true
+    }
+  },
+  "no_split_around": {
+    "type": "list",
+    "description": "切分保护词",
+    "hint": "切分点后面紧跟这些词时就不切开：比如把 Provider 加进来，「版本号是 3.2。Provider 当前在线」就不会在句号后面分成两条。全角半角自动等价，无需重复填写。",
+    "default": []
+  },
+  "force_split_symbols": {
+    "type": "list",
+    "description": "强制切分符号",
+    "hint": "消息里出现这些符号时，一定从这里分成两条，符号留在前一条的末尾，其他规则都拦不住。比如加了「|」，「前半句|后半句」会分成两条。全角半角自动等价，无需重复填写。",
+    "default": []
+  },
   "markdown_clean_mode": {
     "type": "string",
     "description": "Markdown 清洗模式",
@@ -81,6 +148,9 @@
       "min": 0,
       "max": 2,
       "step": 0.1
+    },
+    "condition": {
+      "segmenter": "llm"
     }
   },
   "max_tokens": {
@@ -91,6 +161,9 @@
       "min": 64,
       "max": 4096,
       "step": 32
+    },
+    "condition": {
+      "segmenter": "llm"
     }
   },
   "timeout_seconds": {
@@ -102,12 +175,16 @@
       "min": 1,
       "max": 60,
       "step": 0.5
+    },
+    "condition": {
+      "segmenter": "llm"
     }
   },
   "delay_base": {
     "type": "float",
     "description": "补发基础延迟（秒）",
-    "default": 1.25,
+    "hint": "每段之间至少等待的基础秒数；建议不低于 1，降低触发平台风控的概率。",
+    "default": 1.3,
     "slider": {
       "min": 0,
       "max": 5,
@@ -126,12 +203,91 @@
   },
   "delay_max": {
     "type": "float",
-    "description": "单段最大补发延迟（秒）",
+    "description": "每条消息最大发送延迟（秒）",
+    "hint": "每条消息最大发送延迟。smart 模式：基础等待不超过这个值，之后由上一段结尾的标点增减以及随机抖动延迟共同决定最终延迟。linear 模式：最大延迟始终不超过这个值。",
     "default": 2.0,
     "slider": {
       "min": 0,
       "max": 10,
       "step": 0.1
+    }
+  },
+  "delay_strategy": {
+    "type": "string",
+    "description": "发送延迟策略",
+    "hint": "linear：只随字符数增加延迟，固定不变。smart：由单段基础最大延迟、标点符号与随机浮动共同决定。全角半角符号自动等价，无需重复填写。",
+    "default": "linear",
+    "options": [
+      "linear",
+      "smart"
+    ]
+  },
+  "jitter_max_seconds": {
+    "type": "float",
+    "description": "随机抖动上限（秒）",
+    "hint": "smart 策略下每次发送在基础间隔上加 0 到该值之间的随机抖动，让发送时间不那么规律；0 为关闭抖动。",
+    "default": 0.15,
+    "slider": {
+      "min": 0,
+      "max": 1,
+      "step": 0.05
+    },
+    "condition": {
+      "delay_strategy": "smart"
+    }
+  },
+  "smart_delay_increase_symbols": {
+    "type": "list",
+    "description": "增加等待的结尾符号",
+    "hint": "上一段结尾出现这些符号时增加本次等待，模拟说话的停顿感。全角半角自动等价；省略号按长度区分——`...`（含单个 …）与 `……` 是不同的符号，默认列表均已包含。",
+    "default": [
+      "……",
+      "...",
+      "...?"
+    ],
+    "condition": {
+      "delay_strategy": "smart"
+    }
+  },
+  "smart_delay_increase_seconds": {
+    "type": "float",
+    "description": "每个增加符号追加的秒数",
+    "hint": "上一段结尾符号串里每出现一次增加符号，就在本次间隔上追加该秒数。",
+    "default": 0.25,
+    "slider": {
+      "min": 0,
+      "max": 5,
+      "step": 0.1
+    },
+    "condition": {
+      "delay_strategy": "smart"
+    }
+  },
+  "smart_delay_decrease_symbols": {
+    "type": "list",
+    "description": "减少等待的结尾符号",
+    "hint": "上一段结尾出现这些符号时缩短本次等待，模拟急促的语气。全角半角自动等价：配置一个「！」即同时覆盖半角 !，无需分别配置。",
+    "default": [
+      "！",
+      "？！",
+      "！？"
+    ],
+    "condition": {
+      "delay_strategy": "smart"
+    }
+  },
+  "smart_delay_decrease_seconds": {
+    "type": "float",
+    "description": "每个减少符号缩短的秒数",
+    "hint": "上一段结尾符号串里每出现一次减少符号，就从本次间隔扣除该秒数。",
+    "default": 0.25,
+    "slider": {
+      "min": 0,
+      "max": 5,
+      "step": 0.1
+    },
+    "condition": {
+      "delay_strategy": "smart"
     }
   }
 }
