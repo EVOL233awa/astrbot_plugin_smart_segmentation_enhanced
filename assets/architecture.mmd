@@ -7,7 +7,7 @@ flowchart TB
     end
 
     subgraph Main["主控层 main.py"]
-        Config["SegmentationSettings"]
+        Config["SegmentationSettings（segmenter 引擎选择）"]
         Cache["预分段缓存检索：精确哈希 / 签名相等 / 前缀拼合 / contains 对齐"]
         Locks["会话串行锁"]
         Pending["补发任务管理"]
@@ -16,12 +16,14 @@ flowchart TB
 
     subgraph Engine["segmentation/ 分段引擎"]
         Clean["Markdown 清洗 off/light/heavy"]
-        Detect["检测：use_local_only / 非自然语言 / 受保护块"]
+        Detect["检测：segmenter / 非自然语言 / 整篇 Markdown"]
         PipeMask["管道符掩码：先掩码正文 |，解析后回填"]
+        Anchor["锚点掩码：受保护块 → 唯一锚点"]
+        AnchorCheck["锚点校验与展开还原"]
         LLM["LLM 分段调用与解析"]
         Reconstruct["原文标点重建"]
         Leading["前导标点归属"]
-        Local["本地高精切分（原子块扫描 / 句中括号回并）"]
+        Local["本地高精切分（原子块保护 / 句子级打包 / 短尾合并）"]
         Stabilize["长度稳定 / 全局打包"]
     end
 
@@ -33,12 +35,17 @@ flowchart TB
     Hook1 --> Config
     Hook1 --> Clean
     Clean --> Detect
-    Detect -->|本地 / 受保护块 / use_local_only| Local
-    Detect -->|仅非保护块| PipeMask
+    Detect -->|"segmenter=local / 非自然语言 / 整篇 Markdown"| Local
+    Detect -->|"segmenter=llm 且含受保护块"| Anchor
+    Detect -->|"segmenter=llm 且纯文本"| PipeMask
+    Anchor --> LLM
     PipeMask --> LLM
     LLM -->|调用| Provider
     LLM --> Reconstruct
-    Reconstruct --> Leading
+    Reconstruct -->|"纯文本"| Leading
+    Reconstruct -->|"含受保护块"| AnchorCheck
+    AnchorCheck -->|"成功：还原域后处理"| Stabilize
+    AnchorCheck -->|"失败：降级本地"| Local
     Leading --> Local
     Local --> Stabilize
     Stabilize --> Cache
@@ -51,7 +58,7 @@ flowchart TB
     Scheduler --> Chain
 
     classDef node fill:#161b22,stroke:#30363d,stroke-width:1.5px,color:#e6edf3,rx:6,ry:6;
-    class Hook1,Hook2,Hook3,Config,Cache,Locks,Pending,Scheduler,Clean,Detect,PipeMask,LLM,Reconstruct,Leading,Local,Stabilize,Provider,Chain node;
+    class Hook1,Hook2,Hook3,Config,Cache,Locks,Pending,Scheduler,Clean,Detect,PipeMask,Anchor,AnchorCheck,LLM,Reconstruct,Leading,Local,Stabilize,Provider,Chain node;
 
     style AstrBot fill:#162C4A,stroke:#2f6feb,color:#79c0ff
     style Main fill:#2E2648,stroke:#8957e5,color:#d2a8ff
