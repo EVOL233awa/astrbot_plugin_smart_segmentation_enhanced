@@ -4,6 +4,45 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.5.0] - 2026-09-14
+
+### Added
+- **完整句子分段**：本地切分以完整句子为分段单元，段落由完整句子合并而成，不再在跨句合并块内部做句内切分；单个句子超过单段长度上限时，才按「句末标点 > 分号 > 逗号」的优先级在标点处切开。
+- **省略号停顿独立成段**：「让我再想想……」这类省略号停顿段不再与后续句子粘连；句首省略号与「嗯…」等语气短停顿仍留在原句。
+- **新增配置项 `ellipsis_pause_min_chars`**：控制省略号停顿独立成段的最小长度（2–10，默认 4），调大可减少短停顿碎段，调小可加强断续的说话节奏。
+- **smart 发送延迟**：新增配置项 `delay_strategy`（默认 `linear`）。`smart` 按加权长度（非 ASCII 字符 1.0、ASCII 字符 0.5）计算基础等待，并按上一段结尾符号调整本次间隔（默认每次 0.25 秒）——省略号后多等、感叹号后急促，模拟更自然的说话节奏；触发符号与秒数经 `smart_delay_*` 四个配置项自定义，仅在 `smart` 策略下显示。符号匹配忽略全角/半角差异（省略号按长度区分：`...` 含单个 …，`……` 是更长的符号），组合符号（如 `?!`、`...?`）按最长匹配计分一次、不与其组成部分重复计分；符号修正在 `delay_max` 之上叠加（实际间隔可能略超），任何间隔不低于 1 秒。
+- **新增配置项 `jitter_max_seconds`**：smart 策略下每次发送的随机抖动上限（默认 0.15 秒，可关），让发送时间不那么规律。
+- **补发基础延迟默认值 1.25 秒 → 1.3 秒**：配合 smart 的符号修正，保证任何间隔不低于 1 秒，降低触发平台风控的概率。
+- **短尾合并**：新增配置项 `merge_short_tail`（默认关）与 `short_tail_threshold`（默认 2，仅在开关打开时显示）。开启后，最后一条消息不超过阈值字数（比如「嗯。」「好。」）时并入上一条一起发送，不再单独蹦出一条碎消息；动作段、代码块等受保护内容不参与合并，合并后超过单条长度上限时放弃合并。
+- **保护词（不在这些词前断开）**：新增配置项 `no_split_around`（默认空）。切分点后面紧跟列表中的词时不切开——比如把 `Provider` 加进来，「版本号是 3.2。Provider 当前在线」就不会在句号后分成两条。全角半角自动等价；本条是软约束，消息超过单条长度上限时仍按上限切分。
+- **强制切分符号**：新增配置项 `force_split_symbols`（默认空）。消息里出现这些符号时一定从这里分成两条，符号留在前一条末尾，优先级高于保护词与过短段规则；代码块、JSON 等受保护内容内部不切分。本地与 LLM 分段路径均生效（LLM 仍只调用一次，重建后做确定性再切分）。
+- **含受保护块的消息不再整条降级本地切分**：消息中嵌入的代码围栏、JSON、表格、列表、引用（块级结构）原位替换为唯一占位锚点后，与周围文字一起调用一次分段模型，返回前还原为真实内容——块内容不进入分段模型、永不被改写；模型丢失或拆坏锚点时自动降级为原有本地切分（最坏结果等于旧版）。整篇 Markdown 与纯 JSON 仍按原有规则整体放行。
+
+### Changed
+- **linear 延迟不再有随机抖动**：抖动改为 smart 策略专属（可经 `jitter_max_seconds` 配置），linear 的间隔由 `delay_base + 段字符数 × delay_per_char` 确定性给出（仍钳制在 `delay_max` 内）。
+- **最小分段长度默认值 12 → 10**：更短的回复也会尝试智能分段。
+- **省略号不再与句末标点、括号连排在段尾**：句号/问号/感叹号或括号动作之后紧跟的省略号，改归下一条消息开头（如「就这样吧。……下次再说。」拆为「就这样吧。」与「……下次再说。」，「（点了点头）……我知道了。」拆为「（点了点头）」与「……我知道了。」）；文字后的省略号停顿段（「让我再想想……」）语义不变。
+- 新增 19 个回归测试：省略号停顿阈值参数化、schema 一致性、linear/smart 延迟、补发上一段来源、smart 配置净化等。
+- 新增 14 个阶段 4 测试：保护词候选抑制、强制符号预切（含全半角等价与受保护块豁免）、短尾合并端到端、llm 边界过滤与再切分、schema 条件显示；三项新特性默认关闭，默认配置下的切分结果与此前版本逐位一致。
+- **发送引擎配置 `segmenter`**：新增 `local | llm` 两个选项（默认 `local`），取代旧的「仅使用本地切分」开关，决定用本地规则切分还是调用分段模型；分段模型专属的 Provider、风格、温度、token 上限与超时配置只在选择 `llm` 时显示。
+- 新增锚点分段与发送引擎迁移共 28 个回归测试。
+
+### Deprecated
+- **配置项 `use_local_only` 已弃用并从界面隐藏**：其功能由发送引擎 `segmenter` 取代。旧配置会在升级后自动映射（`use_local_only=true` 对应 `segmenter=local`，`false` 对应 `llm`），原有行为不变，无需手动调整；旧键与迁移标记在整个 1.x 保留在配置中，计划 2.0 再评估移除。
+
+### 参考与致谢
+- 本版本的以下能力在设计与行为预期上参考了社区分段插件，实现均为本项目独立编写，未复制参考项目的代码、注释或文档文案；参考项目的署名不代表其对本项目有任何背书、合作或授权。
+
+| 能力 | 参考来源 |
+| --- | --- |
+| 标点优先切分（候选切点 + 优先级 + 按目标长度选点） | [Zhalslar/astrbot_plugin_outputpro](https://github.com/Zhalslar/astrbot_plugin_outputpro) |
+| 短尾合并（末段过短则并入前段） | [LinJohn8/astrbot_plugin_custome_segment_reply](https://github.com/LinJohn8/astrbot_plugin_custome_segment_reply) |
+| 保护词（切点紧邻配置词时不切） | [nuomicici/astrbot_plugin_splitter](https://github.com/nuomicici/astrbot_plugin_splitter)、[LinJohn8/astrbot_plugin_custome_segment_reply](https://github.com/LinJohn8/astrbot_plugin_custome_segment_reply) |
+| 强制切分符号（先按符号预切，再逐段做长度优化） | [LinJohn8/astrbot_plugin_custome_segment_reply](https://github.com/LinJohn8/astrbot_plugin_custome_segment_reply) |
+| smart 延迟（按结尾符号增减等待时长） | [Zhalslar/astrbot_plugin_outputpro](https://github.com/Zhalslar/astrbot_plugin_outputpro)、[LinJohn8/astrbot_plugin_custome_segment_reply](https://github.com/LinJohn8/astrbot_plugin_custome_segment_reply)、[nuomicici/astrbot_plugin_splitter](https://github.com/nuomicici/astrbot_plugin_splitter) |
+
+- 各参考项目遵循其自身许可证；本项目继续以 GPL-3.0-or-later 开源。
+
 ## [1.4.1] - 2026-09-11
 
 ### Changed
@@ -11,7 +50,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - **测试按模块分类**：原 `tests/test_segmentation.py` 的 63 个用例迁移到 `test_core`、`test_protection`、`test_markdown_clean`、`test_boundary`、`test_packing`、`test_local_split`、`test_model_output` 七个文件，断言与方法名保持原样，辅助方法跟随使用者。
 - **文档同步**：README 更新测试运行方式（按模块运行与 pytest）并补充分段引擎的模块划分说明，架构图引擎命名同步为 `segmentation/`。
 
----
 ## [1.4.0] - 2026-09-02
 
 ### Fixed
@@ -221,20 +259,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - **代码函数避让机制**：增加语法前置哨兵，当括号左侧紧邻字母/数字等字符时自动判定为代码语法，防止切碎代码函数（如 `split()`）。
 - **会话状态机残留清理**：在贪婪拼接匹配到缓存后即刻执行销毁消费，避免在多轮 Tool Call 并发场景下造成分段残留。
 
-[1.0.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.0.0
-[1.0.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.0.1
-[1.0.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.0.2
-[1.1.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.1.0
-[1.1.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.1.1
-[1.2.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.2.0
-[1.2.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.2.1
-[1.2.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.2.2
-[1.3.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.0
-[1.3.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.1
-[1.3.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.2
-[1.3.3]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.3
-[1.3.4]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.4
-[1.3.5]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.5
-[1.3.6]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.3.6
-[1.4.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.4.0
-[1.4.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.4.1
+[1.0.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.0.0
+[1.0.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.0.1
+[1.0.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.0.2
+[1.1.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.1.0
+[1.1.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.1.1
+[1.2.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.2.0
+[1.2.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.2.1
+[1.2.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.2.2
+[1.3.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.3.0
+[1.3.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.3.1
+[1.3.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.3.2
+[1.3.3]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.3.3
+[1.3.4]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.3.4
+[1.3.5]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.3.5
+[1.3.6]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.3.6
+[1.4.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.4.0
+[1.4.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.4.1
+[1.5.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.0
