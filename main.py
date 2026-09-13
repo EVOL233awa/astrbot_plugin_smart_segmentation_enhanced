@@ -2,7 +2,7 @@
 from __future__ import annotations
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
@@ -15,11 +15,14 @@ from astrbot.api.star import Context, Star
 
 # 导入多段拼接自愈与本地切分兜底依赖
 from .segmentation import (
+    build_anchor_masking,
     build_segmentation_prompt,
     calculate_send_delay,
     hash_normalized_text,
     is_action_only_text,
+    parse_raw_model_segments,
     parse_segments_from_model_output,
+    segment_from_anchored_output,
     strip_thinking_content,
     clean_markdown_by_mode,
     normalize_response_text_for_key,
@@ -28,10 +31,14 @@ from .segmentation import (
     mask_pipe_in_text,
     restore_pipe_in_segments,
     # 导入非自然语言检测与本地逻辑切分工具
+    apply_force_split_to_segments,
+    apply_no_split_boundaries,
     is_non_natural_language,
     is_markdown_document,
     has_protected_block,
     local_fallback_split,
+    merge_short_tail_segment,
+    safe_escape_segments,
     stabilize_segment_lengths,
 )
 
@@ -44,19 +51,38 @@ _PREPARED_EXTRA_KEY = "smart_segmentation_prepared_segments"
 
 @dataclass(slots=True)
 class SegmentationSettings:
-    use_local_only: bool = False
-    provider_id: str = "llama/qwen3.5-4b-q4kxl"
+    # §5.7：segmenter 是发送引擎唯一权威（local/llm）；use_local_only 仅
+    # 作为迁移来源键保留，加载阶段一次性映射后不再回读。
+    segmenter: str = "local"
+    # 留空 = 使用当前会话模型；推荐用户另行配置小模型专门分段
+    provider_id: str = ""
     style: str = "natural"
-    min_length: int = 12
+    min_length: int = 10
     max_segments: int = 12
     temperature: float = 0.3
     max_tokens: int = 600
     timeout_seconds: float = 10.0
-    delay_base: float = 1.25
+    delay_base: float = 1.3
     delay_per_char: float = 0.05
     delay_max: float = 2.0
+    delay_strategy: str = "linear"
+    jitter_max_seconds: float = 0.15
+    smart_increase_symbols: list[str] = field(
+        default_factory=lambda: ["……", "...", "...?"]
+    )
+    smart_increase_seconds: float = 0.25
+    smart_decrease_symbols: list[str] = field(
+        default_factory=lambda: ["！", "？！", "！？"]
+    )
+    smart_decrease_seconds: float = 0.25
     max_chars_per_segment: int = 180
     markdown_clean_mode: str = "light"
+    ellipsis_pause_min_chars: int = 4
+    # §5.3-5.5：短尾合并默认关闭；保护词与强制分隔符默认空列表。
+    force_split_symbols: list[str] = field(default_factory=list)
+    no_split_around: list[str] = field(default_factory=list)
+    merge_short_tail: bool = False
+    short_tail_threshold: int = 2
 
 
 @dataclass(slots=True)
@@ -76,6 +102,16 @@ class PendingFollowUp:
     delay_max: float
     expires_at: float
     lock: asyncio.Lock | None = None
+    # 延迟策略与 smart 参数在注册时快照：补发是后台任务，
+    # 不受中途配置变更影响；previous_segment 是已发送的上一段，
+    # smart 模式按其结尾符号修正与下一段之间的间隔。
+    delay_strategy: str = "linear"
+    previous_segment: str | None = None
+    jitter_max_seconds: float = 0.15
+    smart_increase_symbols: list[str] = field(default_factory=list)
+    smart_increase_seconds: float = 0.25
+    smart_decrease_symbols: list[str] = field(default_factory=list)
+    smart_decrease_seconds: float = 0.25
 
 
 class SmartSegmentationPlugin(Star):
@@ -90,6 +126,7 @@ class SmartSegmentationPlugin(Star):
         self._active_follow_up_tasks: set[asyncio.Task[Any]] = set()
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._lock_reaper_task: asyncio.Task[Any] | None = None
+        self._smart_delay_warned: set[str] = set()
 
     @filter.on_llm_response()
     async def on_llm_response(
@@ -109,12 +146,12 @@ class SmartSegmentationPlugin(Star):
         if not self._should_segment_text(text, settings):
             return
 
-        # 仅在本地高精切分模式下，完全不调用分段模型。
+        # 仅在 local 引擎、纯 JSON/代码、整篇 Markdown 时跳过分段模型；
+        # 含受保护块的普通消息走锚点路径（§5.6），不再整条降级本地。
         if (
-            settings.use_local_only
+            settings.segmenter == "local"
             or is_non_natural_language(text)
             or is_markdown_document(text)
-            or has_protected_block(text)
         ):
             logger.info(
                 "智能分段已启用本地/受保护块直发模式，跳过分段模型调用"
@@ -123,6 +160,8 @@ class SmartSegmentationPlugin(Star):
                 text,
                 settings.max_segments,
                 settings.max_chars_per_segment,
+                pause_min_chars=settings.ellipsis_pause_min_chars,
+                **self._split_option_kwargs(settings),
             )
         else:
             provider_id = await self._resolve_provider_id(event, settings)
@@ -208,6 +247,8 @@ class SmartSegmentationPlugin(Star):
                     min_length=settings.min_length,
                     max_segments=settings.max_segments,
                     max_chars_per_segment=settings.max_chars_per_segment,
+                    ellipsis_pause_min_chars=settings.ellipsis_pause_min_chars,
+                    **self._split_option_kwargs(settings),
                 )
             if not segments or len(segments) <= 1:
                 return
@@ -216,6 +257,7 @@ class SmartSegmentationPlugin(Star):
                 segments,
                 max_segments=settings.max_segments,
                 max_chars_per_segment=settings.max_chars_per_segment,
+                pause_min_chars=settings.ellipsis_pause_min_chars,
             )
             if not segments or len(segments) <= 1:
                 return
@@ -230,6 +272,7 @@ class SmartSegmentationPlugin(Star):
                 session=event.unified_msg_origin,
                 segments=follow_up_segments,
                 settings=settings,
+                first_segment=first_segment,
             )
             event.set_extra(_PENDING_EXTRA_KEY, pending_id)
             pending = self._pending_follow_ups.get(pending_id)
@@ -288,27 +331,120 @@ class SmartSegmentationPlugin(Star):
             logger.debug("读取智能分段配置 %s 失败: %s", key, exc)
         return default
 
+    def _as_str_list(self, value: Any) -> list[str]:
+        """把配置值清洗为非空字符串列表：转字符串、去首尾空白、去重保序。"""
+        if value is None:
+            return []
+        if not isinstance(value, (list, tuple)):
+            value = [value]
+        result: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if text and text not in result:
+                result.append(text)
+        return result
+
+    def _split_option_kwargs(self, settings: SegmentationSettings) -> dict[str, Any]:
+        """§5.3-5.5 切分选项的统一传参，保持各调用点行为一致。"""
+        return {
+            "force_split_symbols": settings.force_split_symbols,
+            "no_split_around": settings.no_split_around,
+            "merge_short_tail": settings.merge_short_tail,
+            "short_tail_threshold": settings.short_tail_threshold,
+        }
+
+    def _resolve_segmenter(self) -> str:
+        """§5.7：segmenter 为发送引擎唯一权威；旧键 use_local_only 一次性迁移。
+
+        仅当 segmenter_migrated=false 时执行：use_local_only=true → local、
+        false → llm；只写入 segmenter 与迁移标记，不修改 use_local_only 的
+        值。写盘失败时下次加载重试；此后不再回读 use_local_only。
+        """
+        migrated = self._as_bool(
+            self._get_config_value("segmenter_migrated", False), False
+        )
+        if migrated:
+            segmenter = str(
+                self._get_config_value("segmenter", "local") or "local"
+            ).strip()
+            return segmenter if segmenter in {"local", "llm"} else "local"
+
+        legacy_use_local = self._as_bool(
+            self._get_config_value("use_local_only", True), True
+        )
+        segmenter = "local" if legacy_use_local else "llm"
+        try:
+            self.config["segmenter"] = segmenter
+            self.config["segmenter_migrated"] = True
+            save = getattr(self.config, "save_config", None)
+            if callable(save):
+                save()
+            logger.info(
+                "已将旧配置 use_local_only=%s 映射为发送引擎 segmenter=%s",
+                legacy_use_local,
+                segmenter,
+            )
+        except Exception as exc:
+            logger.warning("写入 segmenter 迁移结果失败，下次加载将重试: %s", exc)
+        return segmenter
+
     def _get_settings(self) -> SegmentationSettings | None:
         """根据插件当前配置，解析并构建类型安全的 `SegmentationSettings` 实例。"""
         enabled = self._as_bool(self._get_config_value("enabled", True), True)
         if not enabled:
             return None
 
+        # 发送引擎：先做旧键一次性迁移，再以 segmenter 为唯一权威
+        segmenter = self._resolve_segmenter()
+
         style = str(self._get_config_value("style", "natural") or "natural").strip()
         if style not in {"natural", "conservative", "active"}:
             style = "natural"
 
+        # smart 延迟配置读取：同一符号同时配置在增加与减少列表时减少生效，
+        # 违规项在加载阶段剔除并只警告一次；其余符号语义完全由用户自定义。
+        delay_strategy = str(
+            self._get_config_value("delay_strategy", "linear") or "linear"
+        ).strip()
+        if delay_strategy not in {"linear", "smart"}:
+            delay_strategy = "linear"
+        smart_increase = [
+            str(symbol)
+            for symbol in (
+                self._get_config_value(
+                    "smart_delay_increase_symbols", ["……", "...", "...?"]
+                )
+                or []
+            )
+        ]
+        smart_decrease = [
+            str(symbol)
+            for symbol in (
+                self._get_config_value(
+                    "smart_delay_decrease_symbols", ["！", "？！", "！？"]
+                )
+                or []
+            )
+        ]
+        conflicts = sorted(set(smart_increase) & set(smart_decrease))
+        if conflicts:
+            smart_increase = [
+                symbol for symbol in smart_increase if symbol not in conflicts
+            ]
+            self._warn_smart_delay_once(
+                "symbol_conflict",
+                "smart 延迟符号同时配置在增加与减少列表，增加侧已忽略: %s",
+                "、".join(conflicts),
+            )
+
         return SegmentationSettings(
-            use_local_only=self._as_bool(
-                self._get_config_value("use_local_only", False),
-                False,
-            ),
+            segmenter=segmenter,
             provider_id=str(self._get_config_value("provider_id", "") or "").strip(),
             style=style,
             # 兜底默认值与 _conf_schema.json 保持一致，仅在该配置键缺失时生效
             min_length=max(
                 0,
-                self._as_int(self._get_config_value("min_length", 12), 12),
+                self._as_int(self._get_config_value("min_length", 10), 10),
             ),
             max_segments=max(
                 1,
@@ -320,6 +456,30 @@ class SmartSegmentationPlugin(Star):
                     self._get_config_value("max_chars_per_segment", 180),
                     180,
                 ),
+            ),
+            # 兜底默认值与 _conf_schema.json 保持一致；钳制防止 0/负值
+            # 让省略号停顿全部独立成段。
+            ellipsis_pause_min_chars=min(
+                10,
+                max(2, self._as_int(
+                    self._get_config_value("ellipsis_pause_min_chars", 4),
+                    4,
+                )),
+            ),
+            force_split_symbols=self._as_str_list(
+                self._get_config_value("force_split_symbols", [])
+            ),
+            no_split_around=self._as_str_list(
+                self._get_config_value("no_split_around", [])
+            ),
+            merge_short_tail=self._as_bool(
+                self._get_config_value("merge_short_tail", False),
+                False,
+            ),
+            # 0/负值等于关闭短尾合并，交由 merge_short_tail 开关控制
+            short_tail_threshold=max(
+                0,
+                self._as_int(self._get_config_value("short_tail_threshold", 2), 2),
             ),
             markdown_clean_mode=self._as_markdown_clean_mode(
                 self._get_config_value("markdown_clean_mode", "light"),
@@ -342,7 +502,7 @@ class SmartSegmentationPlugin(Star):
             ),
             delay_base=max(
                 0.0,
-                self._as_float(self._get_config_value("delay_base", 1.25), 1.25),
+                self._as_float(self._get_config_value("delay_base", 1.3), 1.3),
             ),
             delay_per_char=max(
                 0.0,
@@ -355,7 +515,38 @@ class SmartSegmentationPlugin(Star):
                 0.0,
                 self._as_float(self._get_config_value("delay_max", 2.0), 2.0),
             ),
+            delay_strategy=delay_strategy,
+            jitter_max_seconds=max(
+                0.0,
+                self._as_float(
+                    self._get_config_value("jitter_max_seconds", 0.15),
+                    0.15,
+                ),
+            ),
+            smart_increase_symbols=smart_increase,
+            smart_increase_seconds=max(
+                0.0,
+                self._as_float(
+                    self._get_config_value("smart_delay_increase_seconds", 0.25),
+                    0.25,
+                ),
+            ),
+            smart_decrease_symbols=smart_decrease,
+            smart_decrease_seconds=max(
+                0.0,
+                self._as_float(
+                    self._get_config_value("smart_delay_decrease_seconds", 0.25),
+                    0.25,
+                ),
+            ),
         )
+
+    def _warn_smart_delay_once(self, key: str, message: str, *args: Any) -> None:
+        """同一类 smart 延迟配置问题只警告一次，避免每条消息刷屏。"""
+        if key in self._smart_delay_warned:
+            return
+        self._smart_delay_warned.add(key)
+        logger.warning(message, *args)
 
     @staticmethod
     def _as_bool(value: Any, default: bool) -> bool:
@@ -485,6 +676,12 @@ class SmartSegmentationPlugin(Star):
         settings: SegmentationSettings,
     ) -> list[str]:
         """调用大模型并传入针对性提示词，执行智能分段流程。"""
+        if has_protected_block(text) and not is_markdown_document(text):
+            return await self._segment_text_with_anchors(
+                text,
+                provider_id=provider_id,
+                settings=settings,
+            )
         masked_text, pipe_placeholder = mask_pipe_in_text(text)
         prompt = build_segmentation_prompt(
             masked_text,
@@ -506,8 +703,87 @@ class SmartSegmentationPlugin(Star):
             fallback_text=masked_text,
             max_segments=settings.max_segments,
             max_chars_per_segment=settings.max_chars_per_segment,
+            pause_min_chars=settings.ellipsis_pause_min_chars,
+            **self._split_option_kwargs(settings),
         )
         return restore_pipe_in_segments(segments, pipe_placeholder)
+
+    async def _segment_text_with_anchors(
+        self,
+        text: str,
+        *,
+        provider_id: str,
+        settings: SegmentationSettings,
+    ) -> list[str]:
+        """含受保护块消息的锚点一次调用路径（§5.6）。
+
+        块原位替换为唯一 alnum 锚点后只调用一次 LLM（段数预算扣除块数）；
+        重建或锚点校验失败、LLM 异常时对原文执行本地切分——效果等于
+        v1.4.1 的整条降级，不倒退。锚点还原在返回前完成，缓存、outbound
+        与补发队列只见真实分段。
+        """
+        def _local_fallback() -> list[str]:
+            return local_fallback_split(
+                text,
+                settings.max_segments,
+                settings.max_chars_per_segment,
+                pause_min_chars=settings.ellipsis_pause_min_chars,
+                **self._split_option_kwargs(settings),
+            )
+
+        masking = build_anchor_masking(text)
+        if masking is None:
+            return _local_fallback()
+        if not masking.has_text:
+            # 只有受保护块没有文本区间：不调用 LLM（§5.6 步骤 8）。
+            return _local_fallback()
+
+        try:
+            masked_text, pipe_placeholder = mask_pipe_in_text(masking.masked_text)
+            budget = max(1, settings.max_segments - len(masking.anchors))
+            prompt = build_segmentation_prompt(masked_text, settings.style, budget)
+            response = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                prompt=prompt,
+                temperature=settings.temperature,
+                max_tokens=settings.max_tokens,
+            )
+            raw_text = str(getattr(response, "completion_text", "") or "").strip()
+            if not raw_text:
+                raise ValueError("分段模型返回为空")
+            llm_segments = parse_raw_model_segments(raw_text, fallback_text=masked_text)
+            expanded = segment_from_anchored_output(
+                llm_segments,
+                masked_text,
+                masking,
+                pipe_placeholder,
+            )
+            if not expanded:
+                raise ValueError("锚点校验未通过或重建失败")
+        except Exception as exc:
+            logger.warning("智能分段锚点路径失败，已降级本地切分: %s", exc)
+            return _local_fallback()
+
+        # 还原域后处理：与普通 LLM 路径语义一致（软约束在硬上限之前）。
+        final = apply_no_split_boundaries(
+            expanded,
+            settings.no_split_around,
+            settings.max_chars_per_segment,
+        )
+        final = apply_force_split_to_segments(final, settings.force_split_symbols)
+        if settings.merge_short_tail:
+            final = merge_short_tail_segment(
+                final,
+                settings.max_chars_per_segment,
+                settings.short_tail_threshold,
+            )
+        final = safe_escape_segments(final)
+        return stabilize_segment_lengths(
+            final,
+            max_segments=settings.max_segments,
+            max_chars_per_segment=settings.max_chars_per_segment,
+            pause_min_chars=settings.ellipsis_pause_min_chars,
+        )
 
     def _take_prepared_segments_from_event(
         self,
@@ -551,6 +827,8 @@ class SmartSegmentationPlugin(Star):
                 suffix,
                 budget,
                 settings.max_chars_per_segment,
+                pause_min_chars=settings.ellipsis_pause_min_chars,
+                **self._split_option_kwargs(settings),
             )
             segments.extend(suffix_segments)
             return segments
@@ -571,6 +849,15 @@ class SmartSegmentationPlugin(Star):
                 tail,
                 settings,
             )
+            # 补切预算「至少保留 1 段以不丢内容」可能让总段数超出
+            # max_segments（池内已占满时），此处强制合并兜底保证段数达标。
+            if settings.max_segments > 0 and len(segments) > settings.max_segments:
+                segments = stabilize_segment_lengths(
+                    segments,
+                    max_segments=settings.max_segments,
+                    max_chars_per_segment=settings.max_chars_per_segment,
+                    pause_min_chars=settings.ellipsis_pause_min_chars,
+                )
             return segments
         return None
 
@@ -594,6 +881,8 @@ class SmartSegmentationPlugin(Star):
             head_text,
             self._aligned_split_budget(segments, settings),
             settings.max_chars_per_segment,
+            pause_min_chars=settings.ellipsis_pause_min_chars,
+            **self._split_option_kwargs(settings),
         )
         return head_segments + segments
 
@@ -611,6 +900,8 @@ class SmartSegmentationPlugin(Star):
             tail_text,
             budget,
             settings.max_chars_per_segment,
+            pause_min_chars=settings.ellipsis_pause_min_chars,
+            **self._split_option_kwargs(settings),
         )
         return segments + tail_segments
 
@@ -674,13 +965,18 @@ class SmartSegmentationPlugin(Star):
         self._store_prepared_segments(session, response_text, [])
 
     def _pop_prepared_segments(
-        self, 
-        session: str, 
+        self,
+        session: str,
         outbound_text: str,
         *,
         min_length: int = 15,
         max_segments: int = 0,
         max_chars_per_segment: int = 0,
+        ellipsis_pause_min_chars: int = 4,
+        force_split_symbols: list[str] | None = None,
+        no_split_around: list[str] | None = None,
+        merge_short_tail: bool = False,
+        short_tail_threshold: int = 2,
     ) -> list[str] | None:
         """从预存库中获取分段结果（精确匹配 -> 顺序贪婪组合自愈 -> 本地高精分段兜底）。"""
         self._prune_expired_prepared_segments()
@@ -778,6 +1074,10 @@ class SmartSegmentationPlugin(Star):
                 pooled_settings = SegmentationSettings(
                     max_segments=max_segments,
                     max_chars_per_segment=max_chars_per_segment,
+                    force_split_symbols=list(force_split_symbols or []),
+                    no_split_around=list(no_split_around or []),
+                    merge_short_tail=merge_short_tail,
+                    short_tail_threshold=short_tail_threshold,
                 )
                 segments = list(best_aligned_entry.segments)
                 segments = self._prepend_aligned_parts(
@@ -790,6 +1090,14 @@ class SmartSegmentationPlugin(Star):
                     tail,
                     pooled_settings,
                 )
+                # 同 _pop 前缀/对齐分支：补切预算「至少保留 1 段」可能
+                # 让总段数超出 max_segments，强制合并兜底保证段数达标。
+                if max_segments > 0 and len(segments) > max_segments:
+                    segments = stabilize_segment_lengths(
+                        segments,
+                        max_segments=max_segments,
+                        max_chars_per_segment=max_chars_per_segment,
+                    )
                 return segments
 
         # 3. 终极自愈兜底：本地纯逻辑高精切分
@@ -799,6 +1107,11 @@ class SmartSegmentationPlugin(Star):
                 outbound_text,
                 max_segments,
                 max_chars_per_segment,
+                pause_min_chars=ellipsis_pause_min_chars,
+                force_split_symbols=list(force_split_symbols or []),
+                no_split_around=list(no_split_around or []),
+                merge_short_tail=merge_short_tail,
+                short_tail_threshold=short_tail_threshold,
             )
             if local_segs and len(local_segs) > 1:
                 logger.info("智能分段精准哈希/拼合未中，已自动降级启动本地高精切分兜底")
@@ -825,6 +1138,7 @@ class SmartSegmentationPlugin(Star):
         session: str,
         segments: list[str],
         settings: SegmentationSettings,
+        first_segment: str | None = None,
     ) -> str:
         """登记当前会话中等待后台补发的所有后续分段消息。"""
         self._prune_expired_pending_follow_ups()
@@ -836,6 +1150,14 @@ class SmartSegmentationPlugin(Star):
             delay_per_char=settings.delay_per_char,
             delay_max=settings.delay_max,
             expires_at=time.monotonic() + _PENDING_FOLLOW_UP_TTL_SECONDS,
+            delay_strategy=settings.delay_strategy,
+            # 首条补发的「上一段」就是已经发送出去的首段。
+            previous_segment=first_segment,
+            smart_increase_symbols=list(settings.smart_increase_symbols),
+            smart_increase_seconds=settings.smart_increase_seconds,
+            jitter_max_seconds=settings.jitter_max_seconds,
+            smart_decrease_symbols=list(settings.smart_decrease_symbols),
+            smart_decrease_seconds=settings.smart_decrease_seconds,
         )
         return pending_id
 
@@ -877,12 +1199,22 @@ class SmartSegmentationPlugin(Star):
     async def _run_follow_up_segments(self, pending: PendingFollowUp) -> None:
         """后台异步主循环，按照时间延迟算法逐条补发余下的消息分段。"""
         try:
+            # smart 延迟的符号修正看「上一段结尾」：首条补发的上一段是
+            # 已发送的首段，后续补发的上一段是循环中的前一条。
+            previous_segment = pending.previous_segment
             for segment in pending.segments:
                 delay = calculate_send_delay(
                     segment,
                     pending.delay_base,
                     pending.delay_per_char,
                     pending.delay_max,
+                    strategy=pending.delay_strategy,
+                    previous_segment=previous_segment,
+                    smart_increase_symbols=pending.smart_increase_symbols,
+                    smart_increase_seconds=pending.smart_increase_seconds,
+                    jitter_max_seconds=pending.jitter_max_seconds,
+                    smart_decrease_symbols=pending.smart_decrease_symbols,
+                    smart_decrease_seconds=pending.smart_decrease_seconds,
                 )
                 if delay > 0:
                     await asyncio.sleep(delay)
@@ -891,6 +1223,7 @@ class SmartSegmentationPlugin(Star):
                     pending.session,
                     segment,
                 )
+                previous_segment = segment
                 if not sent:
                     logger.error("智能分段补发最终失败，会话: %s", pending.session)
         except asyncio.CancelledError:
