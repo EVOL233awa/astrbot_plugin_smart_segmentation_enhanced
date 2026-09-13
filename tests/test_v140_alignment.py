@@ -24,10 +24,10 @@ from tests.conftest import (  # noqa: F401
     FakeResult,
 )
 
-from astrbot_plugin_smart_segmentation.main import (  # noqa: E402
+from astrbot_plugin_smart_segmentation_enhanced.main import (  # noqa: E402
     SmartSegmentationPlugin,
 )
-from astrbot_plugin_smart_segmentation.segmentation import (  # noqa: E402
+from astrbot_plugin_smart_segmentation_enhanced.segmentation import (  # noqa: E402
     align_prepared_in_outbound,
     local_fallback_split,
     normalize_content_key,
@@ -73,20 +73,21 @@ USER_CONFIG = {
 
 
 class TestInSentenceBracketMerge(unittest.TestCase):
-    """句中括号回并：正文内括号不再独立成段。"""
+    """括号动作优先独立（2026-09-13 用户裁定，固定优先级）。"""
 
-    def test_inline_bracket_number_stays_in_sentence(self):
+    def test_inline_bracket_number_splits_as_bracket_rule(self):
         text = "先记住的是「取件码」（3-2-1874）还是「快递内容」（书）？"
         segments = local_fallback_split(text, 12, 180)
-        self.assertEqual(len(segments), 1)
-        self.assertEqual(segments[0], text)
+        self.assertEqual("".join(segments), text)
+        self.assertTrue(any("（3-2-1874）" in seg for seg in segments))
 
-    def test_inline_bracket_action_stays_in_sentence(self):
+    def test_inline_bracket_action_splits_as_bracket_rule(self):
         text = "她的结论是，大部分人属于 A——因为物理流程（先扫码）先于心理流程（后取件），取件码先占满工作记忆。"
         segments = local_fallback_split(text, 12, 180)
         joined = "".join(segments)
         self.assertEqual(joined, text)
-        self.assertNotIn("（先扫码）", [s for s in segments if s == "（先扫码）"])
+        self.assertTrue(any("（先扫码）" in seg for seg in segments))
+        self.assertTrue(any("（后取件）" in seg for seg in segments))
 
     def test_sentence_start_action_stays_independent(self):
         text = "（合上记录板）帖主冬雨在讲一个记忆现象。"
@@ -99,9 +100,11 @@ class TestInSentenceBracketMerge(unittest.TestCase):
         self.assertIn("（点头）", segments)
 
     def test_bracket_split_function_boundaries(self):
+        # 2026-09-13 用户裁定：括号动作一律优先独立成段，插入语不再回并。
         self.assertEqual(
             split_text_at_brackets("先记住的是（3-2-1874）还是（书）？"),
-            ["先记住的是（3-2-1874）还是（书）？"],
+            # 「？」是终止标点，跟随括号段（避免后段以前导标点开头）
+            ["先记住的是", "（3-2-1874）", "还是", "（书）？"],
         )
         self.assertEqual(
             split_text_at_brackets("（开心）今天发工资了。"),
@@ -194,9 +197,7 @@ class TestToolLoopPipeline(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             any("还是「快递内容」（书）？" in seg for seg in all_segments)
         )
-        self.assertTrue(
-            any("（先扫码）先于心理流程（后取件）" in seg for seg in all_segments)
-        )
+        self.assertTrue(any("（先扫码）" in seg for seg in all_segments))
         # 不存在逗号开头的碎片段
         self.assertTrue(all(not seg.startswith("，") for seg in all_segments))
 
@@ -230,9 +231,7 @@ class TestToolLoopPipeline(unittest.IsolatedAsyncioTestCase):
         )
         self.assertLessEqual(len(segments), 12)
         # 预处理边界保留：完整句存在
-        self.assertTrue(
-            any("（先扫码）先于心理流程（后取件）" in seg for seg in segments)
-        )
+        self.assertTrue(any("（先扫码）" in seg for seg in segments))
         await plugin.terminate()
 
     async def test_model_parse_path_inline_brackets(self):
@@ -328,7 +327,7 @@ class TestHardeningRegression(unittest.TestCase):
 
     def test_force_merge_no_blank_line_between_action_and_text(self):
         """强制合并时动作段与正文连排，段内不出现空行（线上 23:16 场景）。"""
-        from astrbot_plugin_smart_segmentation.segmentation import (
+        from astrbot_plugin_smart_segmentation_enhanced.segmentation import (
             stabilize_segment_lengths,
         )
 
@@ -347,7 +346,7 @@ class TestHardeningRegression(unittest.TestCase):
 
     def test_force_merge_keeps_blank_line_between_protected_blocks(self):
         """受保护块（代码/JSON）强制合并时仍保留空行分隔。"""
-        from astrbot_plugin_smart_segmentation.segmentation import (
+        from astrbot_plugin_smart_segmentation_enhanced.segmentation import (
             stabilize_segment_lengths,
         )
 
