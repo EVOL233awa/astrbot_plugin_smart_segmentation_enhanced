@@ -1,5 +1,5 @@
-# tests/test_migration.py
-"""segmenter 一次性迁移的单元测试（计划 §5.7）。"""
+# tests/test_settings.py
+"""segmenter 一次性迁移的单元测试（计划 §5.7，对应 plugin/settings.py）。"""
 import os
 import sys
 import unittest

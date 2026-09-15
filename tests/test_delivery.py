@@ -313,7 +313,7 @@ class TestPendingFollowUpPreviousSegment(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch.object(plugin, "_send_follow_up_with_retry", fake_send):
             with mock.patch(
-                "astrbot_plugin_smart_segmentation_enhanced.main.calculate_send_delay",
+                "astrbot_plugin_smart_segmentation_enhanced.plugin.follow_up.calculate_send_delay",
                 side_effect=fake_delay,
             ):
                 await plugin._run_follow_up_segments(pending)
@@ -338,7 +338,7 @@ class TestPendingFollowUpPreviousSegment(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch.object(plugin, "_send_follow_up_with_retry", fake_send):
             with mock.patch(
-                "astrbot_plugin_smart_segmentation_enhanced.main.calculate_send_delay",
+                "astrbot_plugin_smart_segmentation_enhanced.plugin.follow_up.calculate_send_delay",
                 side_effect=fake_delay,
             ):
                 await plugin._run_follow_up_segments(pending)

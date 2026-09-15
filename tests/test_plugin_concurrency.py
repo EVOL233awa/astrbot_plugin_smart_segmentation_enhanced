@@ -1,4 +1,9 @@
-"""Concurrency tests for main.py session serialization."""
+"""插件运行时并发测试（原 test_main_concurrency）。
+
+覆盖 main.py hooks 的会话串行锁与端到端管线，以及
+plugin/follow_up（补发任务、锁释放）与 plugin/prepared_store
+（内容签名匹配、贪婪拼合回退）的运行时行为。
+"""
 
 import asyncio
 import os
