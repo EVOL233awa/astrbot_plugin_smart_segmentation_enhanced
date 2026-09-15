@@ -4,6 +4,12 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.5.1] - 2026-09-15
+
+### Changed
+- **运行时模块化重构（行为等价）**：`main.py`（1236 行、单一 41 方法类）按职责拆分为 `plugin/` 包：`settings`（配置读取、净化与 segmenter 一次性迁移）、`prepared_store`（预处理分段缓存、内容签名对齐自愈与事件直取）、`follow_up`（补发引擎、会话串行锁、锁回收与后台任务追踪）、`orchestrator`（LLM 切分编排）。四个模块以 Mixin 组合进 `SmartSegmentationPlugin`，实例状态仍由 `main.__init__` 统一初始化，各 Mixin 仅以类级注解声明读写属性；`plugin/__init__.py` 集中存放 TTL 与 extra 键常量，不导入子模块。`main.py` 瘦身为 Star 入口、hook 编排与公开 API 门面（`__all__` 再导出），原顶层常量、数据类与函数名全部保持可导入。
+- **测试按运行时模块对齐**：`test_main_concurrency.py` 更名为 `test_plugin_concurrency.py`（并发行为现分布于 main hooks 与 `plugin/follow_up`、`plugin/prepared_store`），`test_migration.py` 更名为 `test_settings.py`（与 `plugin/settings.py` 一一对应）；断言与方法名保持原样。`test_delivery.py` 中 `calculate_send_delay` 的 mock 目标同步为其唯一调用方 `plugin.follow_up.calculate_send_delay`。
+
 ## [1.5.0] - 2026-09-14
 
 ### Added
