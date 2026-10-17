@@ -16,7 +16,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - contains 对齐补切沿用配置的 `ellipsis_pause_min_chars`，不再固定使用默认值。
 - smart 延迟符号冲突检测按 NFKC 与省略号长度归一，`！`/`!`、`……`/`...` 也能识别为同一符号。
 - 段数死锁时的重排自救不再拆开动作段。
-- 插件市场审查：日志统一改用 `from astrbot.api import logger`，移除 `segmentation/core.py` 的内置 `logging` 与 `_LOG`。
 
 ### Changed
 - Markdown 块识别覆盖无首尾竖线的 GFM 表格、`~~~` 围栏、Setext 标题、列表缩进续行、紧贴正文的围栏与 `markdown` 嵌套围栏。
