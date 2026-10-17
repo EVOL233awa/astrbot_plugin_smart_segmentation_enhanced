@@ -23,6 +23,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 ### Internal
 - 收敛 `segmentation/__init__.py` 的私有再导出，移除死代码与重复测试桩。
 
+### Docs
+- 架构图同步 v1.5.1 的 `plugin/` 运行时拆分与 v1.5.2 的本地切分边界（Markdown 块 / 括号 / 引号），并补充 README 架构说明。
+
 ## [1.5.1] - 2026-09-15
 
 ### Changed
