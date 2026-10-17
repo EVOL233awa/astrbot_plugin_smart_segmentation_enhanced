@@ -107,7 +107,14 @@ def _force_join_for_cap(left: str, right: str) -> str:
     """
     if has_protected_block(left) or has_protected_block(right):
         return left.rstrip() + "\n\n" + right.lstrip()
-    return _join_adjacent(left.rstrip(), right.lstrip(), 0)
+    left_body = left.rstrip()
+    right_body = right.lstrip()
+    left_ws = left[len(left_body):]
+    right_ws = right[: len(right) - len(right_body)]
+    # 硬上限合并也不能把行/段落边界粘掉：任一侧带换行时保留一个换行。
+    if "\n" in left_ws or "\n" in right_ws:
+        return left_body + "\n" + right_body
+    return _join_adjacent(left_body, right_body, 0)
 
 
 def _force_merge_to_max_segments(
@@ -226,7 +233,10 @@ def pack_segments_to_target(
     max_chars = _as_nonneg_int(max_chars_per_segment)
     effective_target = max(1, int(target))
 
-    cleaned = [seg.strip() for seg in segments if seg and seg.strip()]
+    # 不在此处 strip：片段边缘的空白/换行是 ASCII 句间空格与段落分隔的
+    # 唯一载体，_join_adjacent 依赖它决定是否补空格或保留换行。只在最终
+    # 输出时清理首尾。
+    cleaned = [seg for seg in segments if seg and seg.strip()]
     if not cleaned:
         return []
 
@@ -270,7 +280,7 @@ def pack_segments_to_target(
                 packed = forced
             else:
                 packed = repacked
-    return packed
+    return [segment.strip() for segment in packed if segment.strip()]
 
 
 def _has_overlong_ordinary_segment(segments: list[str], max_chars: int) -> bool:
@@ -363,6 +373,7 @@ def _repack_within_caps(
             has_protected_block(segment)
             or is_markdown_document(segment)
             or is_non_natural_language(segment)
+            or is_action_only_text(segment)
         ):
             return None
     total = sum(len(segment) for segment in segments)
