@@ -1,4 +1,9 @@
-"""智能分段纯逻辑工具（公开 API 门面）。"""
+"""智能分段纯逻辑工具（公开 API 门面）。
+
+各子模块按职责拆分；本文件只再导出跨模块使用的公开名字，以及测试直接
+依赖的两个边界常量/函数。私有实现请从对应子模块导入，避免把内部细节
+固化成包级公开 API。
+"""
 from __future__ import annotations
 
 from .core import (
@@ -6,10 +11,6 @@ from .core import (
     PROTOCOL_ARTIFACTS_RE,
     THINKING_BOUNDARY_RE,
     THINKING_TAG_RE,
-    _LEADING_PUNCTUATION_RE,
-    _LOG,
-    _SEGMENT_LEADING_PUNCT_CHARS,
-    _as_nonneg_int,
     hash_normalized_text,
     is_action_only_text,
     is_ascii_alnum,
@@ -23,26 +24,6 @@ from .core import (
 )
 
 from .protection import (
-    _INLINE_CODE_RE,
-    _LINK_IMAGE_RE,
-    _MD_HEADING_RE,
-    _MD_HR_RE,
-    _MD_LIST_LINE_RE,
-    _MD_QUOTE_RE,
-    _MD_TABLE_LINE_RE,
-    _consume_code_fence,
-    _consume_json_block,
-    _consume_list,
-    _consume_markdown_block,
-    _consume_quote,
-    _consume_table,
-    _has_structure_after,
-    _is_closing_fence,
-    _is_json_like_block,
-    _is_markdown_block_start,
-    _is_markdown_structural_line,
-    _markdown_region_ranges,
-    _split_non_markdown_lines,
     has_protected_block,
     is_markdown_document,
     safe_escape_segments,
@@ -50,26 +31,12 @@ from .protection import (
 )
 
 from .markdown_clean import (
-    _HEAVY_FALLBACK_WARNED,
-    _MDIT_AVAILABLE,
-    _MDIT_INSTANCE,
-    _clean_code_span,
-    _clean_heavy_chunk_with_mdit,
-    _clean_heavy_text_regex,
-    _clean_inline_markdown,
-    _clean_markdown_region_heavy,
-    _render_heavy_markdown,
-    _split_code_spans,
-    _strip_list_markers,
-    _strip_table_markers,
-    _warn_heavy_fallback_once,
     clean_heavy_markdown,
     clean_light_markdown,
     clean_markdown_by_mode,
 )
 
 from .anchor import (
-    AnchorMasking,
     build_anchor_masking,
     expand_segments_at_anchors,
     generate_anchors,
@@ -78,30 +45,11 @@ from .anchor import (
 )
 
 from .boundary import (
-    _HARD_SENTENCE_END_CHARS,
-    _LEFT_BOUNDARY_CHARS,
-    _PAUSE_BREAK_MIN_CHARS,
-    _SENTENCE_BOUNDARY_CHARS,
-    _buffer_ends_at_sentence_boundary,
-    _force_split_by_symbols,
-    _mask_inline_atoms,
-    _masked_position_map,
-    _no_split_guard,
-    _restore_inline_atoms,
-    _sentence_split_line,
-    _split_plain_text,
-    _top_level_bracket_spans,
     split_segments_at_bracket_boundaries,
     split_text_at_brackets,
 )
 
 from .packing import (
-    _force_join_for_cap,
-    _force_merge_to_max_segments,
-    _hard_split_overlong,
-    _is_unsplittable_segment,
-    _join_adjacent,
-    _merge_to_global_max,
     apply_force_split_to_segments,
     apply_no_split_boundaries,
     compute_target_segment_length,
@@ -110,20 +58,15 @@ from .packing import (
 )
 
 from .local_split import (
-    _split_overlong_in_run,
-    _split_overlong_segment,
     expand_under_split_natural_segments,
     local_fallback_split,
     stabilize_segment_lengths,
 )
 
-from .delivery import (
-    calculate_send_delay,
-)
+from .delivery import calculate_send_delay
 
 from .model_output import (
     STYLE_GUIDES,
-    _find_model_segment_start,
     align_prepared_in_outbound,
     build_segmentation_prompt,
     extract_json_array_text,
@@ -151,8 +94,8 @@ __all__ = [
     "clean_light_markdown",
     "clean_markdown_by_mode",
     "compute_target_segment_length",
-    "expand_under_split_natural_segments",
     "expand_segments_at_anchors",
+    "expand_under_split_natural_segments",
     "extract_json_array_text",
     "generate_anchors",
     "has_protected_block",
