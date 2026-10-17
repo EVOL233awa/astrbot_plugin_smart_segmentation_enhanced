@@ -6,15 +6,15 @@ flowchart TB
         Hook3["after_message_sent（启动补发）"]
     end
 
-    subgraph Main["主控层 main.py"]
-        Config["SegmentationSettings（segmenter 引擎选择）"]
-        Cache["预分段缓存检索：精确哈希 / 签名相等 / 前缀拼合 / contains 对齐"]
-        Locks["会话串行锁"]
+    subgraph Runtime["运行时 plugin/（settings / prepared_store / follow_up / orchestrator）"]
+        Settings["SegmentationSettings（segmenter 引擎选择）"]
+        Store["预分段缓存检索：精确哈希 / 签名相等 / 前缀拼合 / contains 对齐"]
+        Lock["会话串行锁"]
         Pending["补发任务管理"]
         Scheduler["异步补发调度"]
     end
 
-    subgraph Engine["segmentation/ 分段引擎"]
+    subgraph Engine["分段逻辑 segmentation/"]
         Clean["Markdown 清洗 off/light/heavy"]
         Detect["检测：segmenter / 非自然语言 / 整篇 Markdown"]
         PipeMask["管道符掩码：先掩码正文 |，解析后回填"]
@@ -23,16 +23,16 @@ flowchart TB
         LLM["LLM 分段调用与解析"]
         Reconstruct["原文标点重建"]
         Leading["前导标点归属"]
-        Local["本地高精切分（原子块保护 / 句子级打包 / 短尾合并）"]
+        Local["本地切分：Markdown 块 / 括号 / 引号 / 短尾合并"]
         Stabilize["长度稳定 / 全局打包"]
     end
 
     subgraph External["外部"]
-        Provider["分段 LLM Provider"]
-        Chain["AstrBot MessageChain"]
+        Provider["分段 LLM"]
+        Chain["MessageChain"]
     end
 
-    Hook1 --> Config
+    Hook1 --> Settings
     Hook1 --> Clean
     Clean --> Detect
     Detect -->|"segmenter=local / 非自然语言 / 整篇 Markdown"| Local
@@ -48,19 +48,19 @@ flowchart TB
     AnchorCheck -->|"失败：降级本地"| Local
     Leading --> Local
     Local --> Stabilize
-    Stabilize --> Cache
-    Hook2 --> Cache
+    Stabilize --> Store
+    Hook2 --> Store
     Hook2 -->|检索全未命中| Local
-    Cache --> Locks
+    Store --> Lock
     Hook2 --> Chain
     Hook3 --> Pending
     Pending --> Scheduler
     Scheduler --> Chain
 
     classDef node fill:#161b22,stroke:#30363d,stroke-width:1.5px,color:#e6edf3,rx:6,ry:6;
-    class Hook1,Hook2,Hook3,Config,Cache,Locks,Pending,Scheduler,Clean,Detect,PipeMask,Anchor,AnchorCheck,LLM,Reconstruct,Leading,Local,Stabilize,Provider,Chain node;
+    class Hook1,Hook2,Hook3,Settings,Store,Lock,Pending,Scheduler,Clean,Detect,PipeMask,Anchor,AnchorCheck,LLM,Reconstruct,Leading,Local,Stabilize,Provider,Chain node;
 
     style AstrBot fill:#162C4A,stroke:#2f6feb,color:#79c0ff
-    style Main fill:#2E2648,stroke:#8957e5,color:#d2a8ff
+    style Runtime fill:#2E2648,stroke:#8957e5,color:#d2a8ff
     style Engine fill:#183624,stroke:#2ea043,color:#7ee787
     style External fill:#382F19,stroke:#bb8009,color:#e3b341

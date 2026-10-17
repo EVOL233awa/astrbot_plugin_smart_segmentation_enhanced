@@ -89,8 +89,9 @@
 - `on_decorating_result` 负责替换首段并登记补发，不直接发送剩余段。
 - `after_message_sent` 在首段发送成功后启动剩余段异步补发。
 - 缓存未命中时，`on_decorating_result` 会调用本地高精切分兜底。
+- 本地切分先识别 Markdown 结构块（代码块、表格、引用、列表等）与普通文本：结构块整体保留，普通文本可独立触发切分；括号与中英文引号内部不作为切点。
 - heavy 清洗使用内容保全式正则，保留链接 URL、行内代码与 JSON/代码块正文。
-- 分段引擎按职责拆分为 `segmentation/` 包：`core`（基础判断、归一化、哈希）、`protection`（结构保护与安全转义）、`markdown_clean`（Markdown 清洗）、`boundary`（候选切点与括号边界）、`packing`（目标长度与打包约束）、`local_split`（本地切分编排）、`delivery`（发送延迟）、`model_output`（LLM 协议、解析与重建）、`anchor`（受保护块锚点掩码与还原）；`__init__.py` 作为公开 API 门面，导入路径保持不变。
+- 分段引擎按职责拆分为 `segmentation/` 包：`core`（基础判断、归一化、哈希）、`protection`（结构保护、Markdown 块识别与安全转义）、`markdown_clean`（Markdown 清洗）、`boundary`（候选切点、括号与引号边界）、`packing`（目标长度与打包约束）、`local_split`（本地切分编排，Markdown 块与普通文本分离）、`delivery`（发送延迟）、`model_output`（LLM 协议、解析与重建）、`anchor`（受保护块锚点掩码与还原）；`__init__.py` 作为公开 API 门面，导入路径保持不变。
 - 插件运行时按职责拆分为 `plugin/` 包：`settings`（配置读取、净化与 segmenter 迁移）、`prepared_store`（分段缓存与对齐自愈）、`follow_up`（补发引擎与会话锁）、`orchestrator`（LLM 切分编排与 provider 解析）；四个 Mixin 组合进 `SmartSegmentationPlugin`，`main.py` 保留 Star 入口、hook 编排与公开 API 门面。
 
 ## 技术实现与 AI 辅助说明
