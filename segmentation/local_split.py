@@ -170,7 +170,10 @@ def local_fallback_split(
     runs: list[tuple[str, list[str]]] = []
     text_parts: list[str] = []
     all_text_parts: list[str] = []
-    for kind, chunk in split_protected_blocks(cleaned):
+    for kind, chunk in split_protected_blocks(
+        cleaned,
+        max_merged_chars=max_chars,
+    ):
         if kind == "text":
             if force_split_symbols:
                 # 强制预切的片段各自独立成 run 打包，防止被打包逻辑
