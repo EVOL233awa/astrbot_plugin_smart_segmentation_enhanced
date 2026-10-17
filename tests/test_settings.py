@@ -86,5 +86,23 @@ class TestSegmenterMigration(unittest.TestCase):
         self.assertEqual(plugin._get_settings().segmenter, "llm")
 
 
+class TestSmartDelaySymbolConflict(unittest.TestCase):
+    """P3 回归：全半角/省略号写法不同的同一符号也能识别冲突。"""
+
+    def test_nfkc_equivalent_conflict_removed_from_increase(self):
+        config = SaveableConfig(
+            {
+                "enabled": True,
+                "segmenter_migrated": True,
+                "smart_delay_increase_symbols": ["！", "……", "？"],
+                "smart_delay_decrease_symbols": ["!", "..."],
+            }
+        )
+        settings = SmartSegmentationPlugin(FakeContext(), config)._get_settings()
+        # 减少侧生效：增加侧的「！」「……」被剔除
+        self.assertEqual(settings.smart_increase_symbols, ["？"])
+        self.assertEqual(settings.smart_decrease_symbols, ["!", "..."])
+
+
 if __name__ == "__main__":
     unittest.main()

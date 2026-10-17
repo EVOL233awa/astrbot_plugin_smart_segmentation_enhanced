@@ -1,6 +1,5 @@
 # tests/test_delivery.py
 """smart 延迟与 linear 延迟的单元测试，覆盖计划 §5.2 与补发上一段来源。"""
-import asyncio
 import os
 import sys
 import unittest

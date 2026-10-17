@@ -6,10 +6,10 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from segmentation import (
-    _PAUSE_BREAK_MIN_CHARS,
     local_fallback_split,
     stabilize_segment_lengths,
 )
+from segmentation.boundary import _PAUSE_BREAK_MIN_CHARS
 
 
 class TestSegmentationGuardAndFallback(unittest.TestCase):

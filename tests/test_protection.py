@@ -44,9 +44,11 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         self.assertFalse(is_markdown_document(md_text))
         
         segments = local_fallback_split(md_text, max_segs=0)
-        self.assertEqual(len(segments), 3)
+        # 标题、两段普通正文、JSON 块各自独立：块间正文可正常切分
+        self.assertEqual(len(segments), 4)
         self.assertTrue(any(seg.startswith("{") for seg in segments))
         self.assertTrue(any(seg.startswith("# 接口配置说明") for seg in segments))
+        self.assertIn("以下是我们的服务配置 JSON 样例：", segments)
 
     def test_markdown_with_code_blocks(self):
         """验证含有 Python 代码块的 Markdown 笔记能按段落拆分，且内部代码块不会被截断。"""
@@ -62,8 +64,8 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         self.assertFalse(is_markdown_document(md_text))
         
         segments = local_fallback_split(md_text, max_segs=0)
-        # 代码块作为一个整体被保护
-        self.assertEqual(len(segments), 2)
+        # 标题、标题后正文、代码块、代码后正文各自独立；代码块整体保护
+        self.assertEqual(len(segments), 4)
         code_segments = [
             seg
             for seg in segments
@@ -195,7 +197,7 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
             "Done."
         )
         segments = local_fallback_split(text, 12, 180)
-        self.assertEqual(len(segments), 2)
+        self.assertEqual(len(segments), 3)
         self.assertTrue(
             any(
                 "```markdown" in seg
@@ -221,8 +223,8 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         self.assertLessEqual(len(segments), 3)
         self.assertTrue(any(seg.strip().startswith("{") for seg in segments))
 
-    def test_heavy_markdown_region_with_plain_prose_stays_merged(self):
-        """验证 v1.3.0 Markdown 区域保护：含正文的重度 Markdown 仍整块放行。"""
+    def test_markdown_blocks_separate_from_plain_prose(self):
+        """Markdown 块与块间普通正文各自独立，不再整篇合并放行。"""
         text = (
             "# 标题\n\n"
             "正文第一句。正文第二句。\n\n"
@@ -230,9 +232,73 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
             "- 项目二\n\n"
             "> 引用第一句。引用第二句。"
         )
-        self.assertTrue(is_markdown_document(text))
+        self.assertFalse(is_markdown_document(text))
         segments = local_fallback_split(text, 12, 180)
-        self.assertEqual(segments, [text])
+        self.assertEqual(len(segments), 3)
+        self.assertEqual(segments[0], "# 标题")
+        self.assertEqual(segments[1], "正文第一句。正文第二句。")
+        self.assertIn("- 项目一", segments[2])
+        self.assertIn("> 引用第一句。", segments[2])
+
+
+class TestMarkdownBlockRecognition(unittest.TestCase):
+    """P2 回归：块间正文可切分，块识别覆盖常见 GFM 写法。"""
+
+    def test_inline_code_angle_brackets_preserved(self):
+        self.assertEqual(
+            local_fallback_split("运行 `a<b>c` 就可以了，别担心。", 12, 180),
+            ["运行 `a<b>c` 就可以了，别担心。"],
+        )
+        # 普通正文里的尖括号仍然转义
+        self.assertEqual(
+            local_fallback_split("请把 <tag> 替换掉。", 12, 180),
+            ["请把 ＜tag＞ 替换掉。"],
+        )
+
+    def test_adjacent_blocks_not_merged_over_max_chars(self):
+        text = (
+            "第一段说明。\n\n"
+            "| A | B |\n| --- | --- |\n| 1 | 2 |\n\n"
+            "```python\nprint(1)\n```\n\n"
+            "最后一段说明。"
+        )
+        segments = local_fallback_split(text, 12, 180)
+        self.assertTrue(all(len(seg) <= 180 for seg in segments))
+        self.assertTrue(any("```python" in seg for seg in segments))
+        self.assertTrue(any("| A | B |" in seg for seg in segments))
+
+    def test_gfm_table_without_outer_pipes_protected(self):
+        text = "参数如下。\n\nA | B\n--- | ---\n1 | 2\n\n结束。"
+        segments = local_fallback_split(text, 12, 180)
+        self.assertTrue(
+            any("A | B\n--- | ---\n1 | 2" in seg for seg in segments)
+        )
+
+    def test_tilde_fence_protected(self):
+        text = "示例：\n~~~python\nprint('<x>')\n~~~\n结束。"
+        segments = local_fallback_split(text, 12, 180)
+        self.assertTrue(
+            any("~~~python\nprint('<x>')\n~~~" in seg for seg in segments)
+        )
+
+    def test_list_continuation_line_not_split_away(self):
+        text = "步骤：\n\n- 第一项\n  继续说明第一项\n- 第二项\n\n结束。"
+        segments = local_fallback_split(text, 12, 180)
+        self.assertTrue(
+            any("继续说明第一项" in seg and "- 第一项" in seg for seg in segments)
+        )
+
+    def test_setext_heading_protected(self):
+        segments = local_fallback_split("标题\n===\n\n正文。", 12, 180)
+        self.assertTrue(any("标题\n===" in seg for seg in segments))
+
+    def test_fence_adjacent_to_prose_protected(self):
+        text = "先说结论。```python\nprint(1)\n```再说细节。"
+        segments = local_fallback_split(text, 12, 180)
+        self.assertEqual(len(segments), 3)
+        self.assertTrue(
+            any("```python" in seg and "print(1)" in seg for seg in segments)
+        )
 
 
 if __name__ == "__main__":

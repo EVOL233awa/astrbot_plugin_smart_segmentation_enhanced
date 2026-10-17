@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from segmentation import (
     local_fallback_split,
 )
+from segmentation.boundary import _force_split_by_symbols
 
 
 class TestSegmentationGuardAndFallback(unittest.TestCase):
@@ -67,8 +68,6 @@ class TestStageFourCutGuards(unittest.TestCase):
 
     def test_force_split_by_symbols_keeps_symbol_in_front(self):
         """强制切分把符号留在前段末尾。"""
-        from segmentation import _force_split_by_symbols
-
         self.assertEqual(
             _force_split_by_symbols("前半句|后半句", ["|"]),
             ["前半句|", "后半句"],
@@ -76,8 +75,6 @@ class TestStageFourCutGuards(unittest.TestCase):
 
     def test_force_split_by_symbols_nfkc_equivalence(self):
         """文本里的全角符号与配置的半角符号等价；省略号膨胀后位置正确。"""
-        from segmentation import _force_split_by_symbols
-
         self.assertEqual(
             _force_split_by_symbols("前半句｜后半句", ["|"]),
             ["前半句｜", "后半句"],
@@ -89,8 +86,6 @@ class TestStageFourCutGuards(unittest.TestCase):
 
     def test_force_split_by_symbols_overlap_and_no_hit(self):
         """重叠命中保留先收集的区间；无命中返回原文本。"""
-        from segmentation import _force_split_by_symbols
-
         self.assertEqual(_force_split_by_symbols("没有符号的句子", ["|"]), ["没有符号的句子"])
         # "|" 与 "||" 同时配置：先收集的 "|" 命中逐个生效
         self.assertEqual(
@@ -117,6 +112,70 @@ class TestStageFourCutGuards(unittest.TestCase):
         segments = local_fallback_split(text, 8, 180, force_split_symbols=["|"])
         self.assertTrue(any("a|b" in seg for seg in segments))
         self.assertFalse(any(seg.strip() == "a|" for seg in segments))
+
+
+class TestWhitespaceQuotesAndActionBoundaries(unittest.TestCase):
+    """P1 回归：空白/换行保留、标点簇、引号深度与动作段收尾标点。"""
+
+    def test_ascii_sentences_keep_separator_space(self):
+        segments = local_fallback_split("Hello. World. This is fine.", 12, 180)
+        joined = "".join(segments)
+        self.assertIn("Hello. World.", joined)
+        self.assertNotIn("Hello.World", joined)
+
+        self.assertEqual(
+            local_fallback_split("A. B. C.", 12, 180),
+            ["A. B. C."],
+        )
+
+    def test_newlines_between_lines_preserved(self):
+        self.assertEqual(
+            local_fallback_split("第一行内容\n第二行内容", 12, 180),
+            ["第一行内容\n第二行内容"],
+        )
+
+    def test_paragraph_break_not_glued(self):
+        segments = local_fallback_split(
+            "老师，晚上好。\n\n您看起来有些疲倦。需要休息吗？", 12, 180
+        )
+        joined = "".join(segments)
+        self.assertIn("\n\n", joined)
+        self.assertNotIn("好。您看起来", joined)
+
+    def test_force_split_absorbs_punctuation_cluster(self):
+        self.assertEqual(
+            local_fallback_split(
+                "真的吗！！！然后呢。", 12, 180, force_split_symbols=["！"]
+            ),
+            ["真的吗！！！", "然后呢。"],
+        )
+        self.assertEqual(
+            local_fallback_split(
+                "等等……算了。", 12, 180, force_split_symbols=["..."]
+            ),
+            ["等等……", "算了。"],
+        )
+
+    def test_leading_punctuation_not_split_into_own_segment(self):
+        self.assertEqual(
+            local_fallback_split(
+                "！！！然后呢。", 12, 180, force_split_symbols=["！"]
+            ),
+            ["！！！然后呢。"],
+        )
+
+    def test_quote_interior_is_not_a_cut_position(self):
+        from segmentation.boundary import _tier_cut_positions
+
+        text = "「今天天气很好。我们出发吧。」然后回家。"
+        # 引号内的「。」不产生切点，只有句末「。」之后的位置可切。
+        self.assertEqual(_tier_cut_positions(text, 1), [len(text)])
+
+    def test_action_bracket_with_trailing_punctuation_stays_atomic(self):
+        self.assertEqual(
+            local_fallback_split("（点头）。好的，我明白了。", 12, 180),
+            ["（点头）。", "好的，我明白了。"],
+        )
 
 
 class TestEllipsisAfterSentenceEnd(unittest.TestCase):

@@ -13,13 +13,11 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tests.conftest import (  # noqa: E402,F401
+from tests.conftest import (  # noqa: E402
     FakeContext,
     FakeEvent,
     FakeLLMResponse,
     FakeResult,
-    MessageChain,
-    Plain,
 )
 
 from astrbot_plugin_smart_segmentation_enhanced.main import (  # noqa: E402
@@ -27,47 +25,6 @@ from astrbot_plugin_smart_segmentation_enhanced.main import (  # noqa: E402
     PendingFollowUp,
     SmartSegmentationPlugin,
 )
-
-
-class FakeContext:
-    def __init__(self):
-        self.sent = []
-
-    async def send_message(self, session, chain):
-        self.sent.append((session, chain))
-        return True
-
-
-class FakeResult:
-    def __init__(self, text):
-        self.chain = [Plain(text)]
-        self._model_result = True
-
-    def is_model_result(self):
-        return self._model_result
-
-
-class FakeLLMResponse:
-    def __init__(self, text):
-        self.role = "assistant"
-        self.result_chain = MessageChain([Plain(text)])
-        self.completion_text = text
-
-
-class FakeEvent:
-    def __init__(self, session, result):
-        self.unified_msg_origin = session
-        self.result = result
-        self.extra = {}
-
-    def get_result(self):
-        return self.result
-
-    def set_extra(self, key, value):
-        self.extra[key] = value
-
-    def get_extra(self, key, default=""):
-        return self.extra.get(key, default)
 
 
 class TestSessionSerialization(unittest.IsolatedAsyncioTestCase):

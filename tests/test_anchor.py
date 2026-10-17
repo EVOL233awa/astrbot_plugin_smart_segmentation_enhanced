@@ -3,7 +3,6 @@
 import os
 import sys
 import unittest
-from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -67,14 +66,19 @@ class TestAnchorMasking(unittest.TestCase):
         self.assertEqual(len(masking.anchors), 2)
 
     def test_fine_grained_runs_keep_interleaved_text(self):
-        """merge=False 细分：连续 Markdown 结构之间的文字成为独立文本区间。"""
+        """普通正文始终是独立文本区间；merge 只影响相邻结构块。"""
         text = "# 标题\n\n正文第一段。\n\n- 列表项\n\n正文第二段。"
-        fine = split_protected_blocks(text, merge_adjacent_markdown=False)
-        text_chunks = [chunk for kind, chunk in fine if kind == "text"]
-        self.assertTrue(any("正文第一段。" in chunk for chunk in text_chunks))
-        default = split_protected_blocks(text)
-        default_text = [chunk for kind, chunk in default if kind == "text"]
-        self.assertFalse(any("正文第一段。" in chunk for chunk in default_text))
+        for merge in (True, False):
+            chunks = split_protected_blocks(text, merge_adjacent_markdown=merge)
+            text_chunks = [chunk for kind, chunk in chunks if kind == "text"]
+            self.assertTrue(any("正文第一段。" in chunk for chunk in text_chunks))
+
+        # 仅被空行分隔的相邻结构：默认合并，merge=False 分开。
+        adjacent = "# 标题\n\n- 列表项"
+        merged = split_protected_blocks(adjacent)
+        fine = split_protected_blocks(adjacent, merge_adjacent_markdown=False)
+        self.assertEqual(len([c for k, c in merged if k != "text"]), 1)
+        self.assertEqual(len([c for k, c in fine if k != "text"]), 2)
 
 
 class TestAnchorVerifyAndExpand(unittest.TestCase):

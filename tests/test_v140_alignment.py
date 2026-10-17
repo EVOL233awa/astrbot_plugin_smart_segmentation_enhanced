@@ -7,7 +7,6 @@
    原句拦腰斩断，段数顶格 max_segments。
 """
 
-import asyncio
 import os
 import sys
 import unittest
@@ -232,6 +231,25 @@ class TestToolLoopPipeline(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(segments), 12)
         # 预处理边界保留：完整句存在
         self.assertTrue(any("（先扫码）" in seg for seg in segments))
+        await plugin.terminate()
+
+    async def test_aligned_branch_uses_configured_ellipsis_threshold(self):
+        """P3 回归：contains 对齐补切沿用配置的省略号阈值。"""
+        plugin = SmartSegmentationPlugin(FakeContext(), dict(USER_CONFIG))
+        prepared = "（动作）好的。"
+        plugin._store_prepared_segments("s", prepared, [prepared])
+        outbound = "啊……等一下！\n\n" + prepared + "\n\n结束。"
+        segments = plugin._pop_prepared_segments(
+            "s",
+            outbound,
+            min_length=12,
+            max_segments=12,
+            max_chars_per_segment=180,
+            ellipsis_pause_min_chars=3,
+        )
+        self.assertIsNotNone(segments)
+        # 阈值 3 时「啊……」独立成段；旧代码固定用默认值 4 会粘成一条
+        self.assertIn("啊……", segments)
         await plugin.terminate()
 
     async def test_model_parse_path_inline_brackets(self):

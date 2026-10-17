@@ -191,6 +191,22 @@ class TestStageFourStageOptions(unittest.TestCase):
             self.assertEqual(entry["default"], [], key)
 
 
+class TestRepackGuards(unittest.TestCase):
+    """P3 回归：重排自救不得拆开动作段。"""
+
+    def test_repack_rejects_action_segments(self):
+        from segmentation.packing import _repack_within_caps
+
+        self.assertIsNone(
+            _repack_within_caps(
+                ["（点头）", "普通文本" * 6],
+                target=20,
+                max_segments=4,
+                max_chars=40,
+            )
+        )
+
+
 class TestEllipsisLeadingSegment(unittest.TestCase):
     """2026-09-13 用户裁定：省略号开头的段不并入前段（pack 层）。"""
 
