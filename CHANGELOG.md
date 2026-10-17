@@ -4,6 +4,11 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.5.3] - 2026-10-17
+
+### Fixed
+- 插件市场审查：日志统一改用 `from astrbot.api import logger`，移除 `segmentation/core.py` 的内置 `logging` 与 `_LOG`（无行为变更）。
+
 ## [1.5.2] - 2026-10-17
 
 ### Fixed

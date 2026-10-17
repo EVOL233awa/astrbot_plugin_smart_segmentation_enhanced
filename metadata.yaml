@@ -1,7 +1,7 @@
 name: astrbot_plugin_smart_segmentation_enhanced
 display_name: 智能分段 增强版
 desc: 智能分段的个人维护增强版：句子级本地切分、smart 发送延迟、短尾合并、保护词与强制切分、受保护块锚点分段；支持 LLM 与纯本地双引擎。
-version: v1.5.2
+version: v1.5.3
 author: EvoidNGC
 repo: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced
 astrbot_version: ">=4.16,<5"
