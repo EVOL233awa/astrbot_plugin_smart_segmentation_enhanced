@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import math
 
-from .core import _LOG, _as_nonneg_int, is_action_only_text, is_ascii_alnum, is_non_natural_language
+from astrbot.api import logger
+
+from .core import _as_nonneg_int, is_action_only_text, is_ascii_alnum, is_non_natural_language
 from .protection import has_protected_block, is_markdown_document
 from .boundary import (
     _ends_at_hard_sentence,
@@ -273,7 +275,7 @@ def pack_segments_to_target(
                 repacked = None
             if repacked is None:
                 if _has_overlong_ordinary_segment(forced, max_chars):
-                    _LOG.warning(
+                    logger.warning(
                         "文本长度超过 max_segments * max_chars_per_segment，"
                         "无法同时满足硬段数与硬单条长度；已优先避免超长尾段"
                     )

@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import re
 
-from .core import _LOG, is_non_natural_language
+from astrbot.api import logger
+
+from .core import is_non_natural_language
 from .protection import _MD_HR_RE, _MD_LIST_LINE_RE, _MD_TABLE_LINE_RE, has_protected_block, is_markdown_document, split_protected_blocks
 
 _MDIT_INSTANCE = None
@@ -31,7 +33,7 @@ def _warn_heavy_fallback_once() -> None:
     if _HEAVY_FALLBACK_WARNED:
         return
     _HEAVY_FALLBACK_WARNED = True
-    _LOG.warning(
+    logger.warning(
         "mdit_plain/markdown-it-py 不可用，heavy Markdown 清洗降级为内容保全式正则"
     )
 

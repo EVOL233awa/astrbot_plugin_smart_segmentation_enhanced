@@ -3,13 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import re
 import unicodedata
 from typing import Any
-
-
-_LOG = logging.getLogger(__name__.rsplit(".", 1)[0])
 
 
 THINKING_TAG_RE = re.compile(
