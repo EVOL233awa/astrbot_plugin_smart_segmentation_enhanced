@@ -4,6 +4,25 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.5.2] - 2026-10-17
+
+### Fixed
+- 本地切分保留 ASCII 句间空格与换行/段落分隔：`Hello. World.` 不再粘成 `Hello.World.`，多行文本不再被压成一行。
+- 行内代码中的 `<`/`>` 不再被转义：`` `a<b>c` `` 保持原样，普通正文仍按原规则转义。
+- 强制切分符号命中标点簇时整簇保留：`真的吗！！！` 不再被切成 `真的吗！` + `！` + `！`，`等等……` 同理。
+- 括号动作后的收尾标点归属动作段：`（点头）。` 独立成段，不再与后续正文粘连。
+- 引号内部的句末标点不再产生切点，长引语不会被拦腰切断。
+- Markdown 块与块间普通正文分别处理：块间正文正常参与切分，相邻结构块合并受 `max_chars_per_segment` 约束，不再拼出超长受保护段。
+- contains 对齐补切沿用配置的 `ellipsis_pause_min_chars`，不再固定使用默认值。
+- smart 延迟符号冲突检测按 NFKC 与省略号长度归一，`！`/`!`、`……`/`...` 也能识别为同一符号。
+- 段数死锁时的重排自救不再拆开动作段。
+
+### Changed
+- Markdown 块识别覆盖无首尾竖线的 GFM 表格、`~~~` 围栏、Setext 标题、列表缩进续行、紧贴正文的围栏与 `markdown` 嵌套围栏。
+
+### Internal
+- 收敛 `segmentation/__init__.py` 的私有再导出，移除死代码与重复测试桩。
+
 ## [1.5.1] - 2026-09-15
 
 ### Changed
