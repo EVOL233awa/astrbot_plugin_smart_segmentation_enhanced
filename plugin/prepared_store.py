@@ -294,6 +294,7 @@ class PreparedStoreMixin:
                 pooled_settings = SegmentationSettings(
                     max_segments=max_segments,
                     max_chars_per_segment=max_chars_per_segment,
+                    ellipsis_pause_min_chars=ellipsis_pause_min_chars,
                     force_split_symbols=list(force_split_symbols or []),
                     no_split_around=list(no_split_around or []),
                     merge_short_tail=merge_short_tail,
@@ -317,6 +318,7 @@ class PreparedStoreMixin:
                         segments,
                         max_segments=max_segments,
                         max_chars_per_segment=max_chars_per_segment,
+                        pause_min_chars=ellipsis_pause_min_chars,
                     )
                 return segments
 

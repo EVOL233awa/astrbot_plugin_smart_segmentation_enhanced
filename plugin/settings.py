@@ -6,10 +6,11 @@
 """
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import logger
 
 
 @dataclass(slots=True)
@@ -159,10 +160,21 @@ class SettingsMixin:
                 or []
             )
         ]
-        conflicts = sorted(set(smart_increase) & set(smart_decrease))
-        if conflicts:
+        increase_keys = {self._smart_symbol_key(s) for s in smart_increase}
+        decrease_keys = {self._smart_symbol_key(s) for s in smart_decrease}
+        conflict_keys = increase_keys & decrease_keys
+        if conflict_keys:
+            conflicts = sorted(
+                {
+                    symbol
+                    for symbol in smart_increase + smart_decrease
+                    if self._smart_symbol_key(symbol) in conflict_keys
+                }
+            )
             smart_increase = [
-                symbol for symbol in smart_increase if symbol not in conflicts
+                symbol
+                for symbol in smart_increase
+                if self._smart_symbol_key(symbol) not in conflict_keys
             ]
             self._warn_smart_delay_once(
                 "symbol_conflict",
@@ -273,6 +285,14 @@ class SettingsMixin:
                 ),
             ),
         )
+
+    @staticmethod
+    def _smart_symbol_key(symbol: Any) -> str:
+        """smart 延迟符号的等价键：NFKC 全半角等价，省略号长度归一。"""
+        normalized = unicodedata.normalize("NFKC", str(symbol)).strip()
+        if normalized and set(normalized) <= {".", "…"}:
+            return "..."
+        return normalized
 
     def _warn_smart_delay_once(self, key: str, message: str, *args: Any) -> None:
         """同一类 smart 延迟配置问题只警告一次，避免每条消息刷屏。"""
