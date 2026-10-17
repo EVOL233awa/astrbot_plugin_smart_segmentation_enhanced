@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import re
+import unicodedata
 from typing import Any
 
 
@@ -126,7 +127,7 @@ def is_non_natural_language(text: str) -> bool:
             pass
             
     # 3. 纯代码块特征保护：只有整段以围栏开头的文本才整体放行。
-    if stripped.startswith("```"):
+    if stripped.startswith("```") or stripped.startswith("~~~"):
         return True
         
     # 4. 强特征配置字段
@@ -173,25 +174,35 @@ def normalize_segments(segments: Any, max_segments: int | str = 0) -> list[str]:
 
 
 def is_action_only_text(text: str) -> bool:
-    """判断文本是否整体被一对括号包裹。"""
+    """判断文本是否整体是一个括号动作段。
+
+    动作括号之后允许跟随纯标点/符号（如「（点头）。」「（笑）……」），
+    这些收尾符号属于动作段本身；一旦括号后出现正文（汉字、字母、数字），
+    就不再是动作段。
+    """
     stripped = str(text or "").strip()
     if len(stripped) < 2:
         return False
-        
+
     for open_bracket, close_bracket in BRACKET_PAIRS:
-        if not stripped.startswith(open_bracket) or not stripped.endswith(close_bracket):
+        if not stripped.startswith(open_bracket):
             continue
-            
+
         depth = 0
         for index, char in enumerate(stripped):
             if char == open_bracket:
                 depth += 1
             elif char == close_bracket:
                 depth -= 1
-                
-            if depth == 0:
-                return index == len(stripped) - 1
-                
+                if depth == 0:
+                    trailing = stripped[index + 1:]
+                    return all(
+                        char.isspace()
+                        or unicodedata.category(char)[0] in {"P", "S"}
+                        for char in trailing
+                    )
+        return False
+
     return False
 
 

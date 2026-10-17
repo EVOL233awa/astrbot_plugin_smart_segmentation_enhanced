@@ -14,6 +14,20 @@ _HARD_SENTENCE_END_CHARS = frozenset("！？!?…")
 # 段尾允许出现在终止标点之后的收尾符号，判断句末边界时向后跳过。
 _CLOSING_TRAIL_CHARS = frozenset('"\')》】」』＞>】"\'）)')
 
+# 成对引号：引号内部的句末标点不产生切点，避免长引语被拦腰切断。
+# 只在后方确实存在闭合引号时才进入引号深度，孤立引号按普通字符处理。
+_QUOTE_PAIRS: dict[str, str] = {
+    "「": "」",
+    "『": "』",
+    "“": "”",
+    "‘": "’",
+    "《": "》",
+}
+
+# 强制切分符号命中后允许并吸收的标点簇字符：连续的「！！！」「……」
+# 必须留在同一段末尾，不能从标点簇中间切开。
+_CLUSTER_EXTEND_CHARS = frozenset("。！？!?…~.,，、;；:：")
+
 
 def _ends_at_hard_sentence(text: str) -> bool:
     """结尾是否落在终止标点上（允许省略号簇与引号、括号等收尾符）。
@@ -103,6 +117,12 @@ def _nfkc_index_map(text: str) -> tuple[str, list[int]]:
     return "".join(norm_chars), mapping
 
 
+def _has_matching_quote_close(text: str, index: int) -> bool:
+    """判断 index 处的开引号后方是否存在闭合引号。"""
+    close = _QUOTE_PAIRS.get(text[index])
+    return bool(close) and text.find(close, index + 1) != -1
+
+
 def _force_split_by_symbols(text: str, symbols: list[str] | None) -> list[str]:
     """按强制切分符号预切文本，符号保留在前段末尾；无命中返回原文本。
 
@@ -121,14 +141,24 @@ def _force_split_by_symbols(text: str, symbols: list[str] | None) -> list[str]:
             keys.append(key)
     if not keys:
         return [text]
-    max_key_len = max(len(key) for key in keys)
 
     norm_text, mapping = _nfkc_index_map(text)
     hits: list[tuple[int, int]] = []
     for key in keys:
+        # 标点类符号（！、？、……、逗号等）命中后吸收整个标点簇与收尾引号，
+        # 避免把「！！！」切成「！」「！」「！」；分隔符类符号（| 等）保持
+        # 逐次切分语义。
+        is_cluster_symbol = bool(key) and all(
+            char in _CLUSTER_EXTEND_CHARS for char in key
+        )
         start = norm_text.find(key)
         while start >= 0:
             end = start + len(key)
+            if is_cluster_symbol:
+                while end < len(norm_text) and norm_text[end] in _CLUSTER_EXTEND_CHARS:
+                    end += 1
+                while end < len(norm_text) and norm_text[end] in _CLOSING_TRAIL_CHARS:
+                    end += 1
             if not any(hit_start < end and start < hit_end for hit_start, hit_end in hits):
                 hits.append((start, end))
             start = norm_text.find(key, start + 1)
@@ -144,9 +174,10 @@ def _force_split_by_symbols(text: str, symbols: list[str] | None) -> list[str]:
         if orig_start < cursor:
             continue
         piece = text[cursor:orig_end]
-        if piece.strip():
+        # 纯标点前缀不单独成段：开头的「……」「！！！」应跟随后面的正文。
+        if piece.strip() and not is_kaomoji_or_pure_punct(piece):
             pieces.append(piece)
-        cursor = orig_end
+            cursor = orig_end
     tail = text[cursor:]
     if tail.strip():
         pieces.append(tail)
@@ -189,10 +220,22 @@ def _tier_cut_positions(text: str, tier: int) -> list[int]:
     mapping = _masked_position_map(masked, atoms)
     positions: list[int] = []
     depth = 0
+    quote_stack: list[str] = []
     index = 0
     length = len(masked)
     while index < length:
         char = masked[index]
+        if quote_stack:
+            if char == quote_stack[-1]:
+                quote_stack.pop()
+            elif char in _QUOTE_PAIRS and _has_matching_quote_close(masked, index):
+                quote_stack.append(_QUOTE_PAIRS[char])
+            index += 1
+            continue
+        if char in _QUOTE_PAIRS and _has_matching_quote_close(masked, index):
+            quote_stack.append(_QUOTE_PAIRS[char])
+            index += 1
+            continue
         if char in "（(【[":
             depth += 1
             index += 1
@@ -297,18 +340,63 @@ def _pick_priority_cut(
     return short_fallback
 
 
+def _is_flushable_sentence_part(text: str) -> bool:
+    """纯标点/颜文字不作为独立句段：开头的「！！！」应跟随后面的正文。"""
+    return bool(text.strip()) and not is_kaomoji_or_pure_punct(text)
+
+
 def _sentence_split_line(
     line: str,
     pause_min_chars: int = _PAUSE_BREAK_MIN_CHARS,
 ) -> list[str]:
-    """Split one ordinary text line at sentence-ending punctuation clusters."""
+    """Split ordinary text at sentence-ending punctuation clusters.
+
+    原文空白与换行原样保留在片段边缘（由打包阶段决定是否合并），避免
+    ASCII 句子粘连（「Hello. World.」不得变成「Hello.World.」）与段落
+    换行丢失。引号内部不产生切点，长引语保持完整。
+    """
     parts: list[str] = []
     current: list[str] = []
     depth = 0
+    quote_stack: list[str] = []
     index = 0
     length = len(line)
     while index < length:
         char = line[index]
+
+        if quote_stack:
+            current.append(char)
+            if char == quote_stack[-1]:
+                quote_stack.pop()
+            elif char in _QUOTE_PAIRS and _has_matching_quote_close(line, index):
+                quote_stack.append(_QUOTE_PAIRS[char])
+            index += 1
+            continue
+
+        if char in _QUOTE_PAIRS and _has_matching_quote_close(line, index):
+            quote_stack.append(_QUOTE_PAIRS[char])
+            current.append(char)
+            index += 1
+            continue
+
+        if char in "\r\n":
+            run = ""
+            while index < length and line[index] in "\r\n":
+                run += line[index]
+                index += 1
+            if _is_flushable_sentence_part("".join(current)):
+                current.append(run)
+                parts.append("".join(current))
+                current = []
+            elif parts:
+                # 句末标点已把 current 清空：换行附着在前一段末尾，
+                # 保证跨段合并时段落分隔仍在。
+                parts[-1] += "".join(current) + run
+                current = []
+            else:
+                current.append(run)
+            continue
+
         if char in "（(【[":
             depth += 1
             current.append(char)
@@ -331,8 +419,9 @@ def _sentence_split_line(
                 index += 1
             current.append(dots)
             if index >= length or line[index].isspace():
-                parts.append("".join(current).strip())
-                current = []
+                if _is_flushable_sentence_part("".join(current)):
+                    parts.append("".join(current))
+                    current = []
             continue
 
         if char == "…":
@@ -350,8 +439,12 @@ def _sentence_split_line(
             # 短停顿（「嗯…」）不是句边界，二者都留在原句中。
             has_content = bool("".join(current).strip())
             candidate = "".join(current) + dots
-            if has_content and len(candidate.strip()) >= pause_min_chars:
-                parts.append(candidate.strip())
+            if (
+                has_content
+                and len(candidate.strip()) >= pause_min_chars
+                and not is_kaomoji_or_pure_punct(candidate)
+            ):
+                parts.append(candidate)
                 current = []
             else:
                 current.append(dots)
@@ -367,15 +460,16 @@ def _sentence_split_line(
             while index < length and line[index] in "。！？!?~,，":
                 current.append(line[index])
                 index += 1
-            parts.append("".join(current).strip())
-            current = []
+            if _is_flushable_sentence_part("".join(current)):
+                parts.append("".join(current))
+                current = []
             continue
 
         current.append(char)
         index += 1
 
     if current and "".join(current).strip():
-        parts.append("".join(current).strip())
+        parts.append("".join(current))
     return parts
 
 
@@ -411,12 +505,25 @@ def _split_plain_text(
     )
     expanded: list[str] = []
     for part in bracket_parts:
+        # 句中插入语（括号前没有句末标点）回并前文，保持原句完整；
+        # 句首/句末后的括号仍按固定优先级独立成段。
+        part_head = part.lstrip()[:1]
+        if (
+            expanded
+            and part_head
+            and part_head in "（(【["
+            and expanded[-1].rstrip()
+            and expanded[-1].rstrip()[-1] not in _SENTENCE_BOUNDARY_CHARS
+            and not is_action_only_text(expanded[-1])
+        ):
+            expanded[-1] += part
+            continue
         if is_action_only_text(part):
             expanded.append(part)
             continue
-        for line in part.splitlines():
-            if line.strip():
-                expanded.extend(_sentence_split_line(line, pause_min_chars))
+        # 整段交给句子切分：换行由 _sentence_split_line 作为硬边界处理，
+        # 不再先 splitlines() 丢掉段落分隔。
+        expanded.extend(_sentence_split_line(part, pause_min_chars))
 
     merged: list[str] = []
     for part in expanded:
@@ -426,7 +533,7 @@ def _split_plain_text(
         if merged and (
             is_kaomoji_or_pure_punct(part)
             or (
-                len(part) <= _MIN_FRAGMENT_CHARS
+                len(part.strip()) <= _MIN_FRAGMENT_CHARS
                 and not is_action_only_text(merged[-1])
             )
         ):
@@ -435,18 +542,6 @@ def _split_plain_text(
             merged.append(part)
     result = [part for part in merged if part.strip()]
     return [_restore_inline_atoms(part, inline_atoms) for part in result]
-
-
-def _buffer_ends_at_sentence_boundary(buffer: list[str]) -> bool:
-    """括号前文是否终止于句边界（决定括号段能否独立成段）。
-
-    句中括号（如"取件码（3-2-1874）还是"、"（先扫码）先于心理流程"）
-    是正文的一部分而非动作描写，回并前文避免句子被拦腰切断。
-    """
-    text = "".join(buffer).rstrip()
-    if not text:
-        return True
-    return text[-1] in _SENTENCE_BOUNDARY_CHARS
 
 
 def split_text_at_brackets(text: str) -> list[str]:
@@ -460,10 +555,25 @@ def split_text_at_brackets(text: str) -> list[str]:
         
     parts: list[str] = []
     buffer: list[str] = []
+    quote_stack: list[str] = []
     index = 0
     
     while index < len(text):
         char = text[index]
+        if quote_stack:
+            buffer.append(char)
+            if char == quote_stack[-1]:
+                quote_stack.pop()
+            elif char in _QUOTE_PAIRS and _has_matching_quote_close(text, index):
+                quote_stack.append(_QUOTE_PAIRS[char])
+            index += 1
+            continue
+        if char in _QUOTE_PAIRS and _has_matching_quote_close(text, index):
+            quote_stack.append(_QUOTE_PAIRS[char])
+            buffer.append(char)
+            index += 1
+            continue
+
         matched_pair: tuple[str, str] | None = None
         
         for open_bracket, close_bracket in BRACKET_PAIRS:
@@ -577,9 +687,24 @@ def _top_level_bracket_spans(text: str) -> list[tuple[int, int]]:
     masked_text, atoms = _mask_inline_atoms(text)
     mapping = _masked_position_map(masked_text, atoms)
     masked_spans: list[tuple[int, int]] = []
+    quote_stack: list[str] = []
     index = 0
     while index < len(masked_text):
         char = masked_text[index]
+        if quote_stack:
+            if char == quote_stack[-1]:
+                quote_stack.pop()
+            elif char in _QUOTE_PAIRS and _has_matching_quote_close(
+                masked_text, index
+            ):
+                quote_stack.append(_QUOTE_PAIRS[char])
+            index += 1
+            continue
+        if char in _QUOTE_PAIRS and _has_matching_quote_close(masked_text, index):
+            quote_stack.append(_QUOTE_PAIRS[char])
+            index += 1
+            continue
+
         matched_pair: tuple[str, str] | None = None
         for open_bracket, close_bracket in BRACKET_PAIRS:
             if char == open_bracket:
