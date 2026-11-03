@@ -4,6 +4,24 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.5.4] - 2026-11-04
+
+### Fixed
+- 会话卡死：会话串行锁等待与后台补发各设 60 秒超时。等待超时后本次回复整条发出；发送超时按一次失败重试并释放会话，不再让该会话长时间没有响应（本地与模型引擎均受影响）。
+- 补发队列：过期的待发分段被丢弃时记录 warning 与丢弃条数，此前完全静默。
+- 未闭合围栏：正文后直接跟三反引号时，内容不再被整段删除，也不会把后续正文并入代码块；带信息串的开启行（如 `js title="..."`）不再留下只开不合的围栏，闭合围栏须与开启围栏等长。
+- 四反引号围栏：内部出现整行三反引号时不再提前闭合，也不再把后续正文吞成受保护块；`markdown` 容器内的语言标签围栏仍按嵌套块识别。
+- 锚点位置：受保护块与行内代码、链接混排时，分段结果不再出现块内容重复或顺序错位。
+- 强制符号：只含强制符号的片段挂回前一段末尾，不再单独成条，全半角等价。
+- 本地保护词：`no_split_around` 在本地切分引擎下生效（此前只在 LLM 路径生效），打包后先做边界过滤，再按强制符号切分。
+- 配置健壮性：`smart` 延迟的两侧符号列表为标量时不再抛 `TypeError`（改走 `_as_str_list`），伪值标量仍按空列表处理。
+- 分段回退：模型分段结果与原文仅存在空白差异时不再被视为改写失败，含换行的回复不会因此整条改用本地规则切分。
+- 行内代码：light 清洗的正则加负向环视，四反引号行内代码不再被削成两个反引号。
+
+### Internal
+- 采用 1.5.3 的日志规范（`from astrbot.api import logger`），移除 `segmentation/core.py` 的内置 `logging` 与 `_LOG`。
+- 测试同步上游 1.5.3 的期望值（按 1.5.2「Markdown 块与块间正文分别处理」更新 5 个用例），套件 188 用例全绿。
+
 ## [1.5.3] - 2026-10-17
 
 ### Fixed
