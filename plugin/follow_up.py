@@ -18,7 +18,11 @@ from astrbot.api.event import MessageChain
 from astrbot.api.message_components import Plain
 from astrbot.api.star import Context
 
-from . import _PENDING_FOLLOW_UP_TTL_SECONDS, _PENDING_REAPER_INTERVAL_SECONDS
+from . import (
+    _FOLLOW_UP_SEND_TIMEOUT_SECONDS,
+    _PENDING_FOLLOW_UP_TTL_SECONDS,
+    _PENDING_REAPER_INTERVAL_SECONDS,
+)
 from .settings import SegmentationSettings
 from ..segmentation import calculate_send_delay
 
@@ -75,10 +79,21 @@ class FollowUpMixin:
     ) -> bool:
         for attempt in range(1, attempts + 1):
             try:
-                sent = await self.context.send_message(
-                    session,
-                    MessageChain([Plain(segment)]),
+                sent = await asyncio.wait_for(
+                    self.context.send_message(
+                        session,
+                        MessageChain([Plain(segment)]),
+                    ),
+                    timeout=_FOLLOW_UP_SEND_TIMEOUT_SECONDS,
                 )
+            except TimeoutError:
+                logger.warning(
+                    "智能分段补发第 %s 次超时（> %.0fs）: %s",
+                    attempt,
+                    _FOLLOW_UP_SEND_TIMEOUT_SECONDS,
+                    session,
+                )
+                sent = False
             except Exception as exc:
                 logger.warning("智能分段补发第 %s 次异常: %s", attempt, exc)
                 sent = False
@@ -139,6 +154,13 @@ class FollowUpMixin:
         for key in expired_keys:
             entry = self._pending_follow_ups.pop(key, None)
             if entry is not None:
+                if entry.segments:
+                    logger.warning(
+                        "智能分段补发队列等待超过 %.0fs，丢弃 %s 条未发送分段: %s",
+                        _PENDING_FOLLOW_UP_TTL_SECONDS,
+                        len(entry.segments),
+                        entry.session,
+                    )
                 self._release_pending_lock(entry)
 
     def _track_follow_up_task(self, task: asyncio.Task[Any]) -> None:

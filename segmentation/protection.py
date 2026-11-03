@@ -171,24 +171,37 @@ def _consume_code_fence(lines: list[str], start: int) -> tuple[list[str], int]:
     opening_match = _FENCE_RE.match(opening)
     info = opening[opening_match.end():] if opening_match else ""
     nested = _fence_is_nested_container(info)
-    depth = 1
+    stack = [len(opening) - len(opening.lstrip(fence_char))]
     block = [lines[start]]
     index = start + 1
     while index < len(lines):
         line = lines[index]
         close_match = _FENCE_CLOSE_RE.match(line)
         if close_match is not None and close_match.group(1)[0] == fence_char:
-            depth -= 1
+            if len(close_match.group(1)) >= stack[-1]:
+                stack.pop()
+                block.append(line)
+                index += 1
+                if not stack:
+                    return block, index
+                continue
+            # 长度不足的整行围栏是内容（闭合围栏不短于开启围栏），不是嵌套开启。
             block.append(line)
             index += 1
-            if depth == 0:
-                return block, index
             continue
         if nested:
             stripped = line.lstrip()
             open_match = _FENCE_RE.match(stripped)
             if open_match is not None and open_match.group(1)[0] == fence_char:
-                depth += 1
+                open_len = len(open_match.group(1))
+                inner_info = stripped[open_match.end():]
+                # 同长度且自带容器信息（第二个 ````markdown）分不清内外层，按内容处理；
+                # 语言标签围栏（```python）在不超过栈顶长度时算容器内的嵌套块。
+                if open_len < stack[-1] or (
+                    not _fence_is_nested_container(inner_info)
+                    and open_len <= stack[-1]
+                ):
+                    stack.append(open_len)
         block.append(line)
         index += 1
     return block, index

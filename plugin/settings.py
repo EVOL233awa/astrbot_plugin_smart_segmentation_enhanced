@@ -142,24 +142,18 @@ class SettingsMixin:
         ).strip()
         if delay_strategy not in {"linear", "smart"}:
             delay_strategy = "linear"
-        smart_increase = [
-            str(symbol)
-            for symbol in (
-                self._get_config_value(
-                    "smart_delay_increase_symbols", ["……", "...", "...?"]
-                )
-                or []
+        smart_increase = self._as_str_list(
+            self._get_config_value(
+                "smart_delay_increase_symbols", ["……", "...", "...?"]
             )
-        ]
-        smart_decrease = [
-            str(symbol)
-            for symbol in (
-                self._get_config_value(
-                    "smart_delay_decrease_symbols", ["！", "？！", "！？"]
-                )
-                or []
+            or []
+        )
+        smart_decrease = self._as_str_list(
+            self._get_config_value(
+                "smart_delay_decrease_symbols", ["！", "？！", "！？"]
             )
-        ]
+            or []
+        )
         increase_keys = {self._smart_symbol_key(s) for s in smart_increase}
         decrease_keys = {self._smart_symbol_key(s) for s in smart_decrease}
         conflict_keys = increase_keys & decrease_keys

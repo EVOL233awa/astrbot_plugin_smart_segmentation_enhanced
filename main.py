@@ -22,6 +22,7 @@ from .plugin import (
     _PENDING_REAPER_INTERVAL_SECONDS,
     _PREPARED_EXTRA_KEY,
     _PREPARED_SEGMENT_TTL_SECONDS,
+    _SESSION_LOCK_TIMEOUT_SECONDS,
 )
 from .plugin.follow_up import FollowUpMixin, PendingFollowUp
 from .plugin.orchestrator import OrchestrationMixin
@@ -217,7 +218,18 @@ class SmartSegmentationPlugin(
         if lock is None:
             lock = asyncio.Lock()
             self._session_locks[session] = lock
-        await lock.acquire()
+        try:
+            await asyncio.wait_for(
+                lock.acquire(),
+                timeout=_SESSION_LOCK_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "智能分段等待会话串行锁超过 %.0f 秒，本次回复整条发出: %s",
+                _SESSION_LOCK_TIMEOUT_SECONDS,
+                session,
+            )
+            return
         follow_up_holds_lock = False
         try:
             # 传入最大分段数与最小长度参数，以支持自愈拼接决策及本地高精兜底切分

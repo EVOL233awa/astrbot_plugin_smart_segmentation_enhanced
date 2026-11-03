@@ -662,19 +662,22 @@ def _masked_position_map(masked_text: str, atoms: list[str]) -> list[int]:
     """Map masked inline-atom placeholders back to original character indexes."""
     mapping: list[int] = []
     original_index = 0
-    atom_index = 0
     index = 0
     while index < len(masked_text):
         if masked_text.startswith("\x00A", index):
             end = masked_text.find("\x00", index + 2)
             if end == -1:
                 end = len(masked_text) - 1
-            atom_len = len(atoms[atom_index]) if atom_index < len(atoms) else 1
+            atom_number = masked_text[index + 2 : end]
+            atom_len = (
+                len(atoms[int(atom_number)])
+                if atom_number.isdigit() and int(atom_number) < len(atoms)
+                else 1
+            )
             while index <= end:
                 mapping.append(original_index)
                 index += 1
             original_index += atom_len
-            atom_index += 1
         else:
             mapping.append(original_index)
             index += 1

@@ -5,8 +5,11 @@ import re
 
 from .core import _as_nonneg_int, is_non_natural_language, normalize_segments, strip_thinking_content
 from .protection import has_protected_block, is_markdown_document, safe_escape_segments, split_protected_blocks
-from .boundary import _PAUSE_BREAK_MIN_CHARS, _force_split_by_symbols, _split_plain_text
+from .boundary import _PAUSE_BREAK_MIN_CHARS, _split_plain_text
 from .packing import (
+    apply_force_split_to_segments,
+    apply_no_split_boundaries,
+    attach_symbol_only_pieces,
     _force_merge_to_max_segments,
     _hard_split_overlong,
     _is_unsplittable_segment,
@@ -147,9 +150,9 @@ def local_fallback_split(
 ) -> list[str]:
     """终极自愈兜底：本地纯逻辑高精切分，保护 JSON/Markdown 块并平衡长度。
 
-    force_split_symbols 非空时先按符号强制预切，每个片段独立执行正常
-    切分（§5.5）；no_split_around 非空时紧跟保护词的标点切点不参与选点
-    （§5.4）；merge_short_tail 开启时末段过短并入前一段（§5.3）。
+    force_split_symbols 非空时在打包与边界过滤之后按符号再切分（§5.5）；
+    no_split_around 非空时紧跟保护词的标点切点不参与选点，并在打包后作一次
+    边界过滤（§5.4）；merge_short_tail 开启时末段过短并入前一段（§5.3）。
     """
     max_segments = _as_nonneg_int(max_segs)
     max_chars = _as_nonneg_int(max_chars_per_segment)
@@ -175,18 +178,6 @@ def local_fallback_split(
         max_merged_chars=max_chars,
     ):
         if kind == "text":
-            if force_split_symbols:
-                # 强制预切的片段各自独立成 run 打包，防止被打包逻辑
-                # 按目标长度合并回去；合并只留给硬上限兜底（§5.5）。
-                if text_parts:
-                    runs.append(("text", text_parts))
-                    text_parts = []
-                for piece in _force_split_by_symbols(chunk, force_split_symbols):
-                    parts = _split_plain_text(piece, pause_min_chars)
-                    if parts:
-                        runs.append(("text", parts))
-                        all_text_parts.extend(parts)
-                continue
             parts = _split_plain_text(chunk, pause_min_chars)
             text_parts.extend(parts)
             all_text_parts.extend(parts)
@@ -219,6 +210,11 @@ def local_fallback_split(
                 no_split_around=no_split_around,
             )
         )
+    # §5.4 先于 §5.5：软约束边界过滤在强制再切分之前执行，保证强制切点
+    # 不会被边界过滤合回；与 LLM 路径（model_output.py 重建后处理）次序一致。
+    packed = apply_no_split_boundaries(packed, no_split_around, max_chars)
+    packed = apply_force_split_to_segments(packed, force_split_symbols)
+    packed = attach_symbol_only_pieces(packed, force_split_symbols)
     if max_segments > 0:
         packed = _merge_to_global_max(packed, max_segments, max_chars)
         packed = _force_merge_to_max_segments(packed, max_segments, max_chars)

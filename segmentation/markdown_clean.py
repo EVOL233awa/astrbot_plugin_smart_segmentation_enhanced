@@ -58,7 +58,7 @@ def _clean_inline_markdown(text: str) -> str:
     cleaned = re.sub(r"\*\*(.+?)\*\*", r"\1", cleaned)
     cleaned = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"\1", cleaned)
     cleaned = re.sub(r"~~(.+?)~~", r"\1", cleaned)
-    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+    cleaned = re.sub(r"(?<!`)`(?!`)([^`]+)(?<!`)`(?!`)", r"\1", cleaned)
     return cleaned
 
 
@@ -114,17 +114,14 @@ def _clean_heavy_text_regex(text: str) -> str:
 
 
 def _clean_markdown_region_heavy(text: str) -> str:
-    """Clean a merged Markdown region while preserving code/table/list content."""
+    """Clean a merged Markdown region while preserving code/table/list content.
+
+    闭合围栏的分段由 ``_clean_code_span`` 处理，这里只收到普通文本与
+    未闭合围栏——未闭合围栏按正文清洗，不再当作代码块吞行。
+    """
     cleaned_lines: list[str] = []
-    in_code = False
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped.startswith("```"):
-            in_code = not in_code
-            continue
-        if in_code:
-            cleaned_lines.append(line)
-            continue
         if _MD_HR_RE.match(stripped):
             continue
         if _MD_TABLE_LINE_RE.match(stripped):
@@ -142,16 +139,42 @@ def _clean_markdown_region_heavy(text: str) -> str:
 
 
 def _split_code_spans(text: str) -> list[str]:
-    """Split text into code spans and ordinary Markdown spans."""
-    return re.split(r"(```[\s\S]*?(?:```|$))", text)
+    """Split text into closed code spans and ordinary Markdown spans.
+
+    闭合围栏必须与开启围栏等长（CommonMark），未闭合的围栏留在文本流里
+    按正文处理。
+    """
+    parts: list[str] = []
+    cursor = 0
+    for match in re.finditer(r"(`{3,})[\s\S]*?\1", text):
+        if match.start() > cursor:
+            parts.append(text[cursor : match.start()])
+        parts.append(match.group(0))
+        cursor = match.end()
+    if cursor < len(text):
+        parts.append(text[cursor:])
+    return parts
+
+
+def _is_opening_fence_line(line: str) -> bool:
+    """整行开启围栏：行首反引号串，其后为空或信息串。
+
+    同一行再出现反引号说明这是行内代码（`` ```code``` ``），不是围栏行。
+    """
+    match = re.match(r"^\s*(`{3,})(.*)$", line)
+    if match is None:
+        return False
+    return "`" not in match.group(2)
 
 
 def _clean_code_span(span: str) -> str:
     lines = span.splitlines()
-    if lines and lines[0].strip().startswith("```"):
+    if len(lines) < 2 or re.match(r"^\s*`{3,}\s*$", lines[-1]) is None:
+        # 未闭合围栏（含单行行内 ```code```）：按正文原样保留，不剥围栏行。
+        return span
+    if _is_opening_fence_line(lines[0]):
         lines = lines[1:]
-    if lines and lines[-1].strip().startswith("```"):
-        lines = lines[:-1]
+    lines = lines[:-1]
     return "\n".join(lines)
 
 

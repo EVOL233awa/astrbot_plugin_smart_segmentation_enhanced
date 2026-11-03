@@ -329,13 +329,15 @@ def parse_raw_model_segments(
 
     # 复读 Few-shot 幻觉检测与降级机制
     joined_result = "".join(normalized)
+    compact_joined = "".join(joined_result.split())
+    compact_fallback = "".join(fallback_text.split())
     hallucination_keywords = [
         "今天发工资了",
         "要不要一起去吃大餐",
         "今天天气真好",
         "先按计划执行",
     ]
-    if any(kw in joined_result and kw not in fallback_text for kw in hallucination_keywords):
+    if any(kw in compact_joined and kw not in compact_fallback for kw in hallucination_keywords):
         raise ValueError("Detected few-shot hallucination")
     return normalized
 

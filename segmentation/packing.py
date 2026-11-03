@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import unicodedata
 
 from astrbot.api import logger
 
@@ -22,6 +23,7 @@ _MAX_CUT_ITERATIONS = 4096
 
 # 切点两侧都不短于目标长度的该比例时才算「均衡切点」。
 _CUT_BALANCED_RATIO = 0.5
+
 
 def compute_target_segment_length(
     text: str,
@@ -522,6 +524,53 @@ def apply_force_split_to_segments(
             continue
         result.extend(_force_split_by_symbols(segment, symbols))
     return result
+
+
+def _is_symbol_only_piece(segment: str, symbols: list[str]) -> bool:
+    """片段除强制符号外没有别的可见字符（符号可能长于一个字符、全半角等价）。"""
+    rest = unicodedata.normalize("NFKC", segment.strip())
+    if not rest:
+        return False
+    normalized = sorted(
+        {
+            unicodedata.normalize("NFKC", str(symbol))
+            for symbol in symbols
+            if str(symbol)
+        },
+        key=len,
+        reverse=True,
+    )
+    if not normalized:
+        return False
+    progressed = True
+    while progressed and rest:
+        progressed = False
+        for symbol in normalized:
+            if rest.startswith(symbol):
+                rest = rest[len(symbol) :]
+                progressed = True
+                break
+    return not rest
+
+
+def attach_symbol_only_pieces(
+    segments: list[str],
+    symbols: list[str] | None,
+) -> list[str]:
+    """把只剩强制符号的片段挂回前一段末尾（§5.5「符号留在前段末尾」）。
+
+    打包后再按符号切分时，若某段以符号开头，切分会产出一个只含符号的
+    片段；按既定语义它属于前一条消息的结尾，不能单独成条。
+    """
+    if not symbols:
+        return list(segments)
+    attached: list[str] = []
+    for segment in segments:
+        if attached and _is_symbol_only_piece(segment, symbols):
+            attached[-1] = attached[-1] + segment
+            continue
+        attached.append(segment)
+    return attached
 
 
 def _hard_split_overlong(segment: str, max_chars: int) -> list[str]:

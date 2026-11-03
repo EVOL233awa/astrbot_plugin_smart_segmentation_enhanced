@@ -18,5 +18,8 @@ from __future__ import annotations
 _PREPARED_SEGMENT_TTL_SECONDS = 60.0
 _PENDING_FOLLOW_UP_TTL_SECONDS = 60.0
 _PENDING_REAPER_INTERVAL_SECONDS = 5.0
+# 会话串行锁最长等待与单条补发发送超时：任一环挂死都不能让该会话永久排队。
+_SESSION_LOCK_TIMEOUT_SECONDS = 60.0
+_FOLLOW_UP_SEND_TIMEOUT_SECONDS = 60.0
 _PENDING_EXTRA_KEY = "smart_segmentation_pending_id"
 _PREPARED_EXTRA_KEY = "smart_segmentation_prepared_segments"
