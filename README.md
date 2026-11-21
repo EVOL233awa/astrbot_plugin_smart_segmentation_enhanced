@@ -158,6 +158,18 @@ python -m pytest tests -q
 
 核心分段逻辑在 AI 辅助下重构与验证；问题与改进请提交 Issue 或 PR。
 
+## 参考
+
+本项目的部分能力在设计与行为预期上参考了社区分段插件，实现均为独立编写，未复制参考项目的代码、注释或文档文案。
+
+| 能力 | 参考来源 |
+| --- | --- |
+| 标点优先切分 | [Zhalslar/astrbot_plugin_outputpro](https://github.com/Zhalslar/astrbot_plugin_outputpro) |
+| 短尾合并 | [LinJohn8/astrbot_plugin_custome_segment_reply](https://github.com/LinJohn8/astrbot_plugin_custome_segment_reply) |
+| 保护词 | [nuomicici/astrbot_plugin_splitter](https://github.com/nuomicici/astrbot_plugin_splitter)、[LinJohn8/astrbot_plugin_custome_segment_reply](https://github.com/LinJohn8/astrbot_plugin_custome_segment_reply) |
+| 强制切分符号 | [LinJohn8/astrbot_plugin_custome_segment_reply](https://github.com/LinJohn8/astrbot_plugin_custome_segment_reply) |
+| smart 延迟 | [Zhalslar/astrbot_plugin_outputpro](https://github.com/Zhalslar/astrbot_plugin_outputpro)、[LinJohn8/astrbot_plugin_custome_segment_reply](https://github.com/LinJohn8/astrbot_plugin_custome_segment_reply)、[nuomicici/astrbot_plugin_splitter](https://github.com/nuomicici/astrbot_plugin_splitter) |
+
 ## 许可证
 
 GPL-3.0-or-later。见 [LICENSE](LICENSE)。

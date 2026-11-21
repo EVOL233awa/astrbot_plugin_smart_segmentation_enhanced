@@ -337,18 +337,6 @@ AstrBot 智能分段插件（增强版）的版本变更记录。
 - 代码函数避让：括号左侧紧邻字母、数字时判定为代码语法，防止切碎 `split()`。
 - 多轮 Tool Call 并发时不再残留旧分段。
 
-## 参考
-
-本项目的部分能力在设计与行为预期上参考了社区分段插件，实现均为独立编写，未复制参考项目的代码、注释或文档文案。
-
-| 能力 | 参考来源 |
-| --- | --- |
-| 标点优先切分 | [Zhalslar/astrbot_plugin_outputpro](https://github.com/Zhalslar/astrbot_plugin_outputpro) |
-| 短尾合并 | [LinJohn8/astrbot_plugin_custome_segment_reply](https://github.com/LinJohn8/astrbot_plugin_custome_segment_reply) |
-| 保护词 | [nuomicici/astrbot_plugin_splitter](https://github.com/nuomicici/astrbot_plugin_splitter)、[LinJohn8/astrbot_plugin_custome_segment_reply](https://github.com/LinJohn8/astrbot_plugin_custome_segment_reply) |
-| 强制切分符号 | [LinJohn8/astrbot_plugin_custome_segment_reply](https://github.com/LinJohn8/astrbot_plugin_custome_segment_reply) |
-| smart 延迟 | [Zhalslar/astrbot_plugin_outputpro](https://github.com/Zhalslar/astrbot_plugin_outputpro)、[LinJohn8/astrbot_plugin_custome_segment_reply](https://github.com/LinJohn8/astrbot_plugin_custome_segment_reply)、[nuomicici/astrbot_plugin_splitter](https://github.com/nuomicici/astrbot_plugin_splitter) |
-
 [1.0.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.0.0
 [1.0.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.0.1
 [1.0.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.0.2
