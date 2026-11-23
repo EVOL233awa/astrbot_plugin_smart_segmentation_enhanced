@@ -48,5 +48,29 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         )
 
 
+
+
+class TestInlineMarkerSafety(unittest.TestCase):
+    """普通文本里的数学符号不被当成 Markdown 强调标记。"""
+
+    def test_multiplication_stars_kept(self):
+        self.assertEqual(
+            clean_markdown_by_mode("价格是 5 * 3 = 15 元。", "light"),
+            "价格是 5 * 3 = 15 元。",
+        )
+
+    def test_numeric_range_tildes_kept(self):
+        self.assertEqual(
+            clean_markdown_by_mode("温度 10~~20 度都算正常。", "light"),
+            "温度 10~~20 度都算正常。",
+        )
+
+    def test_emphasis_still_cleaned(self):
+        self.assertEqual(
+            clean_markdown_by_mode("这是 *斜体文字* 和 **粗体**。", "light"),
+            "这是 斜体文字 和 粗体。",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

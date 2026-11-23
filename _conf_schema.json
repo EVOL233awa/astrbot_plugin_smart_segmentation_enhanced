@@ -236,6 +236,26 @@
       "delay_strategy": "smart"
     }
   },
+  "fast_forward_enabled": {
+    "type": "bool",
+    "description": "同会话新消息时加速收尾",
+    "hint": "打开后，同一会话来了新消息时，上一条回复还没发完的分段会改用下面的间隔尽快发完，新回复不必排队等旧消息按原节奏排完；剩余内容不会丢弃。",
+    "default": true
+  },
+  "fast_forward_delay": {
+    "type": "float",
+    "description": "加速收尾的发送间隔（秒）",
+    "hint": "加速期间每两条分段之间等待的秒数；越小收得越快，过小可能触发平台风控。",
+    "default": 0.2,
+    "slider": {
+      "min": 0.05,
+      "max": 2.0,
+      "step": 0.05
+    },
+    "condition": {
+      "fast_forward_enabled": true
+    }
+  },
   "smart_delay_increase_symbols": {
     "type": "list",
     "description": "增加等待的结尾符号",

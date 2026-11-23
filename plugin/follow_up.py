@@ -46,6 +46,10 @@ class PendingFollowUp:
     smart_increase_seconds: float = 0.25
     smart_decrease_symbols: list[str] = field(default_factory=list)
     smart_decrease_seconds: float = 0.25
+    # 同会话来了新消息：剩余分段改按 fast_forward_delay_seconds 尽快发完，
+    # 释放会话锁给新回复；内容不丢弃，只压缩间隔。
+    fast_forward: bool = False
+    fast_forward_delay_seconds: float = 0.2
 
 
 class FollowUpMixin:
@@ -54,6 +58,7 @@ class FollowUpMixin:
     # 以下实例属性由 main.__init__ 统一初始化，此处仅作类型声明。
     context: Context
     _pending_follow_ups: dict[str, PendingFollowUp]
+    _running_follow_ups: dict[str, PendingFollowUp]
     _active_follow_up_tasks: set[asyncio.Task[Any]]
     _session_locks: dict[str, asyncio.Lock]
     _lock_reaper_task: asyncio.Task[Any] | None
@@ -75,7 +80,7 @@ class FollowUpMixin:
         self,
         session: str,
         segment: str,
-        attempts: int = 3,
+        attempts: int = 2,
     ) -> bool:
         for attempt in range(1, attempts + 1):
             try:
@@ -87,13 +92,14 @@ class FollowUpMixin:
                     timeout=_FOLLOW_UP_SEND_TIMEOUT_SECONDS,
                 )
             except TimeoutError:
+                # 超时只代表本地放弃等待，消息可能已经送达；重试会让用户
+                # 收到重复气泡，因此超时视为不确定投递，直接结束。
                 logger.warning(
-                    "智能分段补发第 %s 次超时（> %.0fs）: %s",
-                    attempt,
+                    "智能分段补发超时（> %.0fs），消息可能已送达，不再重试: %s",
                     _FOLLOW_UP_SEND_TIMEOUT_SECONDS,
                     session,
                 )
-                sent = False
+                return False
             except Exception as exc:
                 logger.warning("智能分段补发第 %s 次异常: %s", attempt, exc)
                 sent = False
@@ -129,13 +135,40 @@ class FollowUpMixin:
             jitter_max_seconds=settings.jitter_max_seconds,
             smart_decrease_symbols=list(settings.smart_decrease_symbols),
             smart_decrease_seconds=settings.smart_decrease_seconds,
+            fast_forward_delay_seconds=settings.fast_forward_delay,
         )
         return pending_id
 
     def _pop_pending_follow_up(self, pending_id: str) -> PendingFollowUp | None:
-        """检索并提取处于挂起状态下的延迟补发分段上下文。"""
+        """检索并提取处于挂起状态下的延迟补发上下文。"""
         self._prune_expired_pending_follow_ups()
         return self._pending_follow_ups.pop(pending_id, None)
+
+    def _fast_forward_follow_ups(self, session: str) -> int:
+        """同会话新消息到来时，把仍在排队的旧补发改为快速发送。
+
+        只压缩发送间隔，不丢弃、不重排任何分段：用户追问后不必等上一条
+        回复的剩余尾巴按原节奏发完才看到新回复。返回受影响的队列数。
+        """
+        affected = 0
+        candidates = list(self._pending_follow_ups.values()) + list(
+            self._running_follow_ups.values()
+        )
+        for pending in candidates:
+            if (
+                pending.session == session
+                and pending.segments
+                and not pending.fast_forward
+            ):
+                pending.fast_forward = True
+                affected += 1
+        if affected:
+            logger.info(
+                "同会话收到新消息，%s 条补发队列转为快速发送: %s",
+                affected,
+                session,
+            )
+        return affected
 
     def _release_pending_lock(self, pending: PendingFollowUp) -> None:
         """释放 pending 持有的会话串行锁，避免补发任务异常后锁泄漏。"""
@@ -176,6 +209,7 @@ class FollowUpMixin:
 
     async def _run_follow_up_segments(self, pending: PendingFollowUp) -> None:
         """后台异步主循环，按照时间延迟算法逐条补发余下的消息分段。"""
+        self._running_follow_ups[pending.session] = pending
         try:
             # smart 延迟的符号修正看「上一段结尾」：首条补发的上一段是
             # 已发送的首段，后续补发的上一段是循环中的前一条。
@@ -195,6 +229,8 @@ class FollowUpMixin:
                     smart_decrease_seconds=pending.smart_decrease_seconds,
                 )
                 if delay > 0:
+                    if pending.fast_forward:
+                        delay = min(delay, pending.fast_forward_delay_seconds)
                     await asyncio.sleep(delay)
 
                 sent = await self._send_follow_up_with_retry(
@@ -210,4 +246,5 @@ class FollowUpMixin:
         except Exception as exc:
             logger.error("智能分段后台补发任务异常: %s", exc, exc_info=True)
         finally:
+            self._running_follow_ups.pop(pending.session, None)
             self._release_pending_lock(pending)

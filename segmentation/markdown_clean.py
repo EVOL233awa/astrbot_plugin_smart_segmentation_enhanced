@@ -56,8 +56,11 @@ def _clean_inline_markdown(text: str) -> str:
     cleaned = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\1 (\2)", cleaned)
     cleaned = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", cleaned)
     cleaned = re.sub(r"\*\*(.+?)\*\*", r"\1", cleaned)
-    cleaned = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"\1", cleaned)
-    cleaned = re.sub(r"~~(.+?)~~", r"\1", cleaned)
+    # 强调标记的内侧不接空白：`5 * 3 = 15` 是乘法，不是斜体，
+    # 星号必须原样保留；`*斜体*`（中文常见，无空格）仍正常清洗。
+    cleaned = re.sub(r"(?<!\*)\*(?![\s*])(.+?)(?<![\s*])\*(?!\*)", r"\1", cleaned)
+    # 删除线必须不紧贴单词/数字：`10~~20 度` 是区间，不是删除线。
+    cleaned = re.sub(r"(?<!\w)~~(?!\s)(.+?)(?<!\s)~~(?!\w)", r"\1", cleaned)
     cleaned = re.sub(r"(?<!`)`(?!`)([^`]+)(?<!`)`(?!`)", r"\1", cleaned)
     return cleaned
 

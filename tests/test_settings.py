@@ -104,5 +104,43 @@ class TestSmartDelaySymbolConflict(unittest.TestCase):
         self.assertEqual(settings.smart_decrease_symbols, ["!", "..."])
 
 
+class TestFastForwardSettings(unittest.TestCase):
+    """加速收尾的开关与间隔：默认值与面板一致，越界值被钳制。"""
+
+    def test_defaults_match_schema(self):
+        import json
+        from pathlib import Path
+
+        from astrbot_plugin_smart_segmentation_enhanced.plugin.settings import (
+            SegmentationSettings,
+        )
+
+        schema_path = Path(__file__).resolve().parent.parent / "_conf_schema.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        defaults = SegmentationSettings()
+        self.assertEqual(
+            schema["fast_forward_enabled"]["default"],
+            defaults.fast_forward_enabled,
+        )
+        self.assertEqual(
+            schema["fast_forward_delay"]["default"],
+            defaults.fast_forward_delay,
+        )
+        self.assertEqual(
+            schema["fast_forward_delay"]["condition"],
+            {"fast_forward_enabled": True},
+        )
+
+    def test_delay_clamped_to_slider_range(self):
+        low = SmartSegmentationPlugin(
+            FakeContext(), {"enabled": True, "fast_forward_delay": 0}
+        )._get_settings()
+        high = SmartSegmentationPlugin(
+            FakeContext(), {"enabled": True, "fast_forward_delay": 99}
+        )._get_settings()
+        self.assertEqual(low.fast_forward_delay, 0.05)
+        self.assertEqual(high.fast_forward_delay, 2.0)
+
+
 if __name__ == "__main__":
     unittest.main()

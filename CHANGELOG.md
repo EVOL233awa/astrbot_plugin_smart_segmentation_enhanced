@@ -4,6 +4,28 @@ AstrBot 智能分段插件（增强版）的版本变更记录。
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [1.5.5] - 2026-11-24
+
+聊天里的常见符号与追问场景更稳。
+
+### Fixed
+
+- 裸链接里的 `?`、`~` 不再被当成句末，消息里出现网址不会被切成两条。
+- 星号与波浪号不再被误删：`5 * 3 = 15`、`10~~20 度` 保持原样。
+- 颜文字保持原样：`>_<` 不再变成 `＞_＜`；贴着字母的尖括号仍按原规则转义。
+- 编号列表与英文缩写不再被拆错：`1. 打开设置 2. 关闭开关` 的序号跟着自己的条目，`e.g.`、`p.m.` 后的点号不再断句。
+- 数字区间（`10~20`）不再在波浪号处断句。
+- 漏写右括号时，后续句子仍正常分段，不再整条不分段。
+- 消息开头只有 `！？` 这类符号时，挂到下一句一起发，不再单独一条。
+- 合并英文句子时保留句间空格，不再出现 `p.m.We`。
+- `[At:…]`、`[Face:…]`、`[CQ:…]` 这类标记不再被当成动作括号单独成条。
+- 补发发送超时后不再重试，避免同一条消息重复到达；明确失败最多重试一次。
+
+### Changed
+
+- 同一会话来了新消息时，上一条回复剩余的分段改为快速发出，追问的回复不必等旧消息按原节奏排完；剩余内容不丢弃。
+- 官方 QQ、微信公众号与钉钉平台不支持主动追加消息，这些平台改为整条发出，不再只发第一段。
+
 ## [1.5.4] - 2026-11-04
 
 会话与围栏边界更稳定。
@@ -359,3 +381,4 @@ AstrBot 智能分段插件（增强版）的版本变更记录。
 [1.5.2]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.2
 [1.5.3]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.3
 [1.5.4]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.4
+[1.5.5]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.5

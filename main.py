@@ -95,6 +95,14 @@ __all__ = [
 ]
 
 
+# 与 AstrBot 内置 segmented_reply 保持一致：这些平台的适配器不支持
+# 主动调用 send_message（qq 官方 API 直接抛 NotImplementedError，
+# 微信公众号走基类空实现），补发只会让用户收到首段。
+_NO_PROACTIVE_SEND_PLATFORMS = frozenset(
+    {"qq_official_webhook", "weixin_official_account", "dingtalk"}
+)
+
+
 class SmartSegmentationPlugin(
     SettingsMixin,
     PreparedStoreMixin,
@@ -110,6 +118,9 @@ class SmartSegmentationPlugin(
         self.config = config if config is not None else {}
         self._prepared_segments: dict[tuple[str, str], PreparedSegments] = {}
         self._pending_follow_ups: dict[str, PendingFollowUp] = {}
+        # 已启动、正在逐条发送的补发任务：after_message_sent 会把 pending
+        # 从待启动表移走，快进与清理需要另有一份运行中引用。
+        self._running_follow_ups: dict[str, PendingFollowUp] = {}
         self._active_follow_up_tasks: set[asyncio.Task[Any]] = set()
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._lock_reaper_task: asyncio.Task[Any] | None = None
@@ -124,6 +135,14 @@ class SmartSegmentationPlugin(
         """在主 LLM 返回后预先计算智能分段。"""
         settings = self._get_settings()
         if settings is None:
+            return
+
+        # 同会话来了新消息：上一条回复的剩余分段转为快速发送，
+        # 新回复不必等旧尾巴按原节奏排完（内容不丢弃）。
+        if settings.fast_forward_enabled:
+            self._fast_forward_follow_ups(event.unified_msg_origin)
+
+        if not self._platform_supports_follow_up(event):
             return
 
         text = clean_markdown_by_mode(
@@ -193,6 +212,9 @@ class SmartSegmentationPlugin(
         """发送前把完整回复替换为首段，并登记剩余段。"""
         settings = self._get_settings()
         if settings is None:
+            return
+
+        if not self._platform_supports_follow_up(event):
             return
 
         result = event.get_result()
@@ -318,6 +340,7 @@ class SmartSegmentationPlugin(
         for pending in list(self._pending_follow_ups.values()):
             self._release_pending_lock(pending)
         self._pending_follow_ups.clear()
+        self._running_follow_ups.clear()
         self._session_locks.clear()
 
     @staticmethod
@@ -363,6 +386,22 @@ class SmartSegmentationPlugin(
             except Exception:
                 return False
         return cls._is_plain_chain(result)
+
+    @staticmethod
+    def _platform_supports_follow_up(event: AstrMessageEvent) -> bool:
+        """判断当前平台是否支持靠 send_message 追加消息。
+
+        不支持主动发送的平台上补发会静默失败（用户只收到首段），此时
+        整条发出更符合预期；拿不到平台名时按支持处理。
+        """
+        get_platform_name = getattr(event, "get_platform_name", None)
+        if not callable(get_platform_name):
+            return True
+        try:
+            name = str(get_platform_name() or "").strip()
+        except Exception:
+            return True
+        return name not in _NO_PROACTIVE_SEND_PLATFORMS
 
     @staticmethod
     def _should_segment_text(text: str, settings: SegmentationSettings) -> bool:

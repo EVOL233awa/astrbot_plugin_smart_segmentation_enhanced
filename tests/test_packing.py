@@ -70,6 +70,24 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         self.assertEqual("".join(segments).replace("\n", ""), text)
 
 
+
+
+class TestEnglishSentenceJoin(unittest.TestCase):
+    """合并两个英文句子时保留句间空格。"""
+
+    def test_join_after_sentence_period_keeps_space(self):
+        from segmentation.packing import _join_adjacent
+
+        self.assertEqual(
+            _join_adjacent("It is 5 p.m.", "We ran the tests."),
+            "It is 5 p.m. We ran the tests.",
+        )
+        self.assertEqual(
+            _join_adjacent("今天开饭了。", "明天见。"),
+            "今天开饭了。明天见。",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
 

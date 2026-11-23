@@ -49,6 +49,9 @@ def compute_target_segment_length(
     return max(1, target)
 
 
+_ASCII_SENTENCE_TAIL_CHARS = frozenset(".!?,;:\"'")
+
+
 def _join_adjacent(left: str, right: str, limit: int = 0) -> str:
     """Join two segments without physically gluing ASCII words together."""
     if not left:
@@ -57,7 +60,12 @@ def _join_adjacent(left: str, right: str, limit: int = 0) -> str:
         return left
     if left[-1].isspace() or right[0].isspace():
         return left + right
-    if is_ascii_alnum(left[-1]) and is_ascii_alnum(right[0]):
+    # 英文句子合并：左段以句末标点结尾、右段以字母数字开头时同样要补空格，
+    # 否则「5 p.m.」+「We ran」会粘成「p.m.We」。
+    if (
+        is_ascii_alnum(right[0])
+        and (is_ascii_alnum(left[-1]) or left[-1] in _ASCII_SENTENCE_TAIL_CHARS)
+    ):
         spaced = left + " " + right
         if limit <= 0 or len(spaced) <= limit:
             return spaced

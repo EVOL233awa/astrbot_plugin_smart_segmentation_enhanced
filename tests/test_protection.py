@@ -206,12 +206,17 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
             )
         )
 
-    def test_kaomoji_leading_greater_than_escaped(self):
-        """验证以 > 开头的颜文字不再被误判为 Markdown 引用而跳过转义。"""
-        self.assertEqual(local_fallback_split(">_<", 0, 180), ["＞_＜"])
+    def test_kaomoji_leading_greater_than_kept(self):
+        """颜文字形式的尖括号保持原样，只有贴文字的尖括号才转全角。"""
+        self.assertEqual(local_fallback_split(">_<", 0, 180), [">_<"])
         self.assertEqual(
             local_fallback_split("（动作）>_< 你好。", 8, 180),
-            ["（动作）", "＞_＜ 你好。"],
+            ["（动作）", ">_< 你好。"],
+        )
+        # 贴字母的尖括号仍按原规则转义，规避平台物理吞噬。
+        self.assertEqual(
+            local_fallback_split("如果 a<b 就报错。", 0, 180),
+            ["如果 a＜b 就报错。"],
         )
 
     def test_global_max_segments_with_protected_block(self):

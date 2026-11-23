@@ -47,6 +47,30 @@ _SENTENCE_BOUNDARY_CHARS = frozenset("。！？!?~…")
 
 _LEFT_BOUNDARY_CHARS = frozenset("（([【“‘「『《")
 
+# 开括号到闭括号的映射：扫描时先确认配对，未闭合的括号按普通字符处理，
+# 避免一个漏写的「(」让整条回复不再产生任何切点。
+_BRACKET_CLOSE: dict[str, str] = dict(BRACKET_PAIRS)
+
+# 裸链接（不带 Markdown 语法）整串保护：URL 里的 ? ~ = 不参与句切。
+# 尾部中英文标点不计入链接，避免把句末标点吞进 URL。
+_BARE_URL_RE = re.compile(
+    r"(?:(?:https?|ftp)://|www\.)[^\s\u3000<>\"'，。、；！？：（）【】「」『』《》…]+"
+)
+
+# 点号后接空白时的非句末场景：编号列表的「1.」「2.」与常见英文缩写。
+_ABBREVIATION_TAIL_RE = re.compile(
+    r"(?:^|[\s(])(?:mr|mrs|ms|dr|prof|sr|jr|vs|etc|e\.g|i\.e|a\.m|p\.m|no|fig|st)\.$",
+    re.IGNORECASE,
+)
+_LIST_NUMBER_TAIL_RE = re.compile(r"(?:^|\s)(\d{1,3})\.$")
+
+# 数字区间（`10~20 度`、`30~~40`）里的波浪号是范围符不是句末停顿。
+_NUMERIC_RANGE_RE = re.compile(r"(?<=\d)\s*[~～]+\s*(?=\d)")
+
+# CQ 码与提及/表情记号（LLM 偶尔直接输出成文本）：整段保护，
+# 既不当动作括号单独成条，也不从中间硬切。
+_CQ_CODE_RE = re.compile(r"\[(?:CQ|At|Face|Reply|Image|Record|Video|Poke):[^\[\]]*\]")
+
 
 # 标点优先切分：一级为终止标点，二级为分号，三级为逗号顿号。
 # 连续的终止标点与点号视为一个整体（？！、！！！、。。。、……、... 不得从中间切开）。
@@ -398,7 +422,9 @@ def _sentence_split_line(
             continue
 
         if char in "（(【[":
-            depth += 1
+            close_bracket = _BRACKET_CLOSE.get(char)
+            if close_bracket is not None and line.find(close_bracket, index + 1) != -1:
+                depth += 1
             current.append(char)
             index += 1
             continue
@@ -419,8 +445,25 @@ def _sentence_split_line(
                 index += 1
             current.append(dots)
             if index >= length or line[index].isspace():
-                if _is_flushable_sentence_part("".join(current)):
-                    parts.append("".join(current))
+                clause = "".join(current)
+                # 编号列表的「2.」属于它后面的条目：在编号前断开，
+                # 编号留在新段开头，避免序号挂到上一条末尾。
+                number_match = (
+                    _LIST_NUMBER_TAIL_RE.search(clause) if len(dots) == 1 else None
+                )
+                if number_match is not None:
+                    # 编号前的空白留在上一段末尾：打包合并时仍能还原
+                    # 「设置 2.」里的原始空格。
+                    head = clause[: number_match.start() + 1]
+                    if head.strip():
+                        parts.append(head)
+                        current = [number_match.group(1) + "."]
+                    continue
+                # 英文缩写后的点号不是句末（e.g. / p.m. / Mr.）。
+                if _ABBREVIATION_TAIL_RE.search(clause):
+                    continue
+                if _is_flushable_sentence_part(clause):
+                    parts.append(clause)
                     current = []
             continue
 
@@ -474,15 +517,31 @@ def _sentence_split_line(
 
 
 def _mask_inline_atoms(text: str) -> tuple[str, list[str]]:
-    """保护行内代码与链接/图片，返回 (masked_text, atoms)。"""
+    """保护行内代码、Markdown 链接/图片与裸链接，返回 (masked_text, atoms)。"""
     atoms: list[str] = []
 
     def _repl(match: re.Match[str]) -> str:
         atoms.append(match.group(0))
         return f"\x00A{len(atoms) - 1}\x00"
 
+    def _repl_url(match: re.Match[str]) -> str:
+        # 句末标点不属于链接：URL 只保护主体，尾部标点留在掩码外，
+        # 由句子切分按正常标点处理。
+        url = match.group(0)
+        trail = ""
+        while url and url[-1] in ".,;:!?":
+            trail = url[-1] + trail
+            url = url[:-1]
+        if not url:
+            return match.group(0)
+        atoms.append(url)
+        return f"\x00A{len(atoms) - 1}\x00" + trail
+
     masked = _INLINE_CODE_RE.sub(_repl, text)
     masked = _LINK_IMAGE_RE.sub(_repl, masked)
+    masked = _CQ_CODE_RE.sub(_repl, masked)
+    masked = _BARE_URL_RE.sub(_repl_url, masked)
+    masked = _NUMERIC_RANGE_RE.sub(_repl, masked)
     return masked, atoms
 
 
@@ -540,6 +599,15 @@ def _split_plain_text(
             merged[-1] += part
         else:
             merged.append(part)
+    # 首段是纯标点/颜文字时挂到下一段开头（「！？（她笑了）」），
+    # 避免首条气泡只有符号；动作段仍保持原子性。
+    if (
+        len(merged) >= 2
+        and is_kaomoji_or_pure_punct(merged[0])
+        and not is_action_only_text(merged[0])
+    ):
+        merged[1] = merged[0] + merged[1]
+        del merged[0]
     result = [part for part in merged if part.strip()]
     return [_restore_inline_atoms(part, inline_atoms) for part in result]
 
@@ -601,9 +669,11 @@ def split_text_at_brackets(text: str) -> list[str]:
             scan_index += 1
             
         if depth != 0:
-            buffer.append(text[index:])
-            index = len(text)
-            break
+            # 未闭合括号（颜文字、半截动作）按普通字符处理：一个漏写的
+            # 括号不应该让整条回复失去全部切点。
+            buffer.append(char)
+            index += 1
+            continue
 
         # 2026-09-13 用户裁定：括号动作一律优先独立成段（固定优先级，
         # 不区分句中/句首、不做长度区分），覆盖 v1.4.0 的句中括号回并规则。

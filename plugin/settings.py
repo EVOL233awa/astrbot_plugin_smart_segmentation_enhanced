@@ -47,6 +47,9 @@ class SegmentationSettings:
     no_split_around: list[str] = field(default_factory=list)
     merge_short_tail: bool = False
     short_tail_threshold: int = 2
+    # 同会话新消息到来时，旧回复剩余分段按该间隔尽快发完。
+    fast_forward_enabled: bool = True
+    fast_forward_delay: float = 0.2
 
 
 class SettingsMixin:
@@ -219,6 +222,18 @@ class SettingsMixin:
             short_tail_threshold=max(
                 0,
                 self._as_int(self._get_config_value("short_tail_threshold", 2), 2),
+            ),
+            fast_forward_enabled=self._as_bool(
+                self._get_config_value("fast_forward_enabled", True),
+                True,
+            ),
+            # 与面板滑杆一致：0.05 秒下限、2 秒上限。
+            fast_forward_delay=min(
+                2.0,
+                max(0.05, self._as_float(
+                    self._get_config_value("fast_forward_delay", 0.2),
+                    0.2,
+                )),
             ),
             markdown_clean_mode=self._as_markdown_clean_mode(
                 self._get_config_value("markdown_clean_mode", "light"),

@@ -6,8 +6,31 @@ import re
 
 from .core import is_non_natural_language
 
+# 颜文字里尖括号一侧紧贴符号或空白（`>_<`、`>///<`），这类尖括号
+# 不会被平台当成 HTML 标签，保持原样；只有贴着文字/字母的尖括号
+# （`<b>`、`a<b`）才转全角规避物理吞噬。
+_KAOMOJI_BRACKET_NEIGHBORS = frozenset(
+    "_^~=|/*\\+-.,:;!?@#$%&()[]{}<>°¯'\"`"
+    "，。、；：！？（）【】「」『』《》…—～"
+)
+
+
+def _is_kaomoji_bracket(text: str, index: int) -> bool:
+    """尖括号的「内侧」邻接符号/空白时视为颜文字，不参与转义。
+
+    `>` 看左侧字符，`<` 看右侧字符：`>_<` 的内侧是 `_` 与空白，
+    `a<b` 的内侧是字母，因此前者放行、后者转义。
+    """
+    char = text[index]
+    inner_index = index - 1 if char == ">" else index + 1
+    if inner_index < 0 or inner_index >= len(text):
+        return True
+    inner = text[inner_index]
+    return inner.isspace() or inner in _KAOMOJI_BRACKET_NEIGHBORS
+
+
 def _escape_angle_brackets_outside_inline_atoms(text: str) -> str:
-    """转义半角尖括号，但保留行内代码与链接/图片内的原文。"""
+    """转义半角尖括号，保留行内代码、链接与颜文字内的原文。"""
     atoms: list[str] = []
 
     def _mask(match: re.Match[str]) -> str:
@@ -16,7 +39,13 @@ def _escape_angle_brackets_outside_inline_atoms(text: str) -> str:
 
     masked = _INLINE_CODE_RE.sub(_mask, text)
     masked = _LINK_IMAGE_RE.sub(_mask, masked)
-    masked = masked.replace("<", "＜").replace(">", "＞")
+
+    def _escape(match: re.Match[str]) -> str:
+        if _is_kaomoji_bracket(masked, match.start()):
+            return match.group(0)
+        return "＜" if match.group(0) == "<" else "＞"
+
+    masked = re.sub(r"[<>]", _escape, masked)
     for index in range(len(atoms) - 1, -1, -1):
         masked = masked.replace(f"\x00E{index}\x00", atoms[index])
     return masked

@@ -275,7 +275,8 @@ class TestSessionSerialization(unittest.IsolatedAsyncioTestCase):
             lock=lock,
         )
         await plugin._run_follow_up_segments(pending)
-        self.assertEqual(len(plugin.context.sent), 9)
+        # 每段最多尝试 2 次（首次 + 1 次重试），3 段共 6 次。
+        self.assertEqual(len(plugin.context.sent), 6)
         self.assertFalse(lock.locked())
 
     async def test_event_extra_binding_avoids_cache_fallback(self):
@@ -295,6 +296,160 @@ class TestSessionSerialization(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.result.chain[0].text, prepared[0])
         self.assertTrue(pending.segments[:2] == prepared[1:])
         self.assertTrue(any(suffix[:8] in seg for seg in pending.segments))
+
+
+class TestFollowUpFastForward(unittest.IsolatedAsyncioTestCase):
+    """同会话新消息到来时，旧补发剩余分段快速收尾。"""
+
+    def _pending(self, session: str = "s") -> PendingFollowUp:
+        return PendingFollowUp(
+            session=session,
+            segments=["第三句内容。", "第四句内容。"],
+            delay_base=5.0,
+            delay_per_char=0.0,
+            delay_max=5.0,
+            expires_at=999999999.0,
+        )
+
+    def test_fast_forward_marks_only_target_session(self):
+        plugin = SmartSegmentationPlugin(FakeContext(), {"enabled": True})
+        same = self._pending("s")
+        other = self._pending("other")
+        running = self._pending("s")
+        plugin._pending_follow_ups["a"] = same
+        plugin._pending_follow_ups["b"] = other
+        plugin._running_follow_ups["s"] = running
+
+        affected = plugin._fast_forward_follow_ups("s")
+
+        self.assertEqual(affected, 2)
+        self.assertTrue(same.fast_forward)
+        self.assertTrue(running.fast_forward)
+        self.assertFalse(other.fast_forward)
+
+    async def test_fast_forward_sends_remaining_segments_quickly(self):
+        plugin = SmartSegmentationPlugin(FakeContext(), {"enabled": True})
+        pending = self._pending()
+        plugin._pending_follow_ups["a"] = pending
+        plugin._fast_forward_follow_ups("s")
+
+        started = time.monotonic()
+        await plugin._run_follow_up_segments(pending)
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(len(plugin.context.sent), 2)
+        self.assertLess(elapsed, 1.5)
+
+    async def test_new_message_triggers_fast_forward(self):
+        plugin = SmartSegmentationPlugin(FakeContext(), {"enabled": True})
+        pending = self._pending()
+        plugin._pending_follow_ups["a"] = pending
+
+        text = "新一轮回复的内容足够长，用来触发预处理。"
+        await plugin.on_llm_response(
+            FakeEvent("s", FakeResult(text)),
+            FakeLLMResponse(text),
+        )
+
+        self.assertTrue(pending.fast_forward)
+
+
+class TestPlatformGuard(unittest.IsolatedAsyncioTestCase):
+    """不支持主动发送的平台整条发出，避免只发首段。"""
+
+    async def test_official_platform_sends_whole_reply(self):
+        class PlatformEvent(FakeEvent):
+            def get_platform_name(self):
+                return "qq_official_webhook"
+
+        plugin = SmartSegmentationPlugin(FakeContext(), {"enabled": True})
+        text = "第一句内容比较长，用于测试平台守卫。第二句内容也很长。"
+        event = PlatformEvent("s", FakeResult(text))
+
+        await plugin.on_decorating_result(event)
+
+        self.assertEqual(event.result.chain[0].text, text)
+        self.assertNotIn("smart_segmentation_pending_id", event.extra)
+
+
+class TestFollowUpTimeout(unittest.IsolatedAsyncioTestCase):
+    """发送超时视为不确定投递，不再重试，避免重复气泡。"""
+
+    async def test_timeout_is_not_retried(self):
+        from astrbot_plugin_smart_segmentation_enhanced.plugin import follow_up as follow_up_mod
+
+        class HangingContext(FakeContext):
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+
+            async def send_message(self, session, chain):
+                self.calls += 1
+                await asyncio.sleep(0.5)
+                self.sent.append((session, chain))
+                return True
+
+        plugin = SmartSegmentationPlugin(HangingContext(), {"enabled": True})
+        pending = PendingFollowUp(
+            session="s",
+            segments=["seg1"],
+            delay_base=0.0,
+            delay_per_char=0.0,
+            delay_max=0.0,
+            expires_at=999999999.0,
+        )
+        original_timeout = follow_up_mod._FOLLOW_UP_SEND_TIMEOUT_SECONDS
+        follow_up_mod._FOLLOW_UP_SEND_TIMEOUT_SECONDS = 0.05
+        try:
+            await plugin._run_follow_up_segments(pending)
+        finally:
+            follow_up_mod._FOLLOW_UP_SEND_TIMEOUT_SECONDS = original_timeout
+
+        self.assertEqual(plugin.context.calls, 1)
+
+
+class TestFastForwardToggle(unittest.IsolatedAsyncioTestCase):
+    """加速收尾的开关与间隔来自面板配置。"""
+
+    def _pending(self) -> PendingFollowUp:
+        return PendingFollowUp(
+            session="s",
+            segments=["第三句内容。"],
+            delay_base=5.0,
+            delay_per_char=0.0,
+            delay_max=5.0,
+            expires_at=999999999.0,
+        )
+
+    async def test_new_message_does_not_fast_forward_when_disabled(self):
+        plugin = SmartSegmentationPlugin(
+            FakeContext(),
+            {"enabled": True, "fast_forward_enabled": False},
+        )
+        pending = self._pending()
+        plugin._pending_follow_ups["a"] = pending
+
+        text = "新一轮回复的内容足够长，用来触发预处理。"
+        await plugin.on_llm_response(
+            FakeEvent("s", FakeResult(text)),
+            FakeLLMResponse(text),
+        )
+
+        self.assertFalse(pending.fast_forward)
+
+    def test_register_snapshots_configured_delay(self):
+        plugin = SmartSegmentationPlugin(
+            FakeContext(),
+            {"enabled": True, "fast_forward_delay": 0.4},
+        )
+        settings = plugin._get_settings()
+        pending_id = plugin._register_pending_follow_up(
+            session="s",
+            segments=["第一段。"],
+            settings=settings,
+        )
+        pending = plugin._pending_follow_ups[pending_id]
+        self.assertAlmostEqual(pending.fast_forward_delay_seconds, 0.4)
 
 
 if __name__ == "__main__":

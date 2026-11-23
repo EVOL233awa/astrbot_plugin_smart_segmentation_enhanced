@@ -211,3 +211,67 @@ class TestEllipsisAfterSentenceEnd(unittest.TestCase):
         """文字后的省略号停顿段语义不变（「让我再想想……」独立）。"""
         segments = local_fallback_split("让我再想想……好的。", 12, 180)
         self.assertIn("让我再想想……", segments)
+
+
+class TestInlineAtomProtection(unittest.TestCase):
+    """链接、数字区间、列表编号与缩写点号不产生错误切点。"""
+
+    def test_bare_url_kept_whole(self):
+        """裸链接里的 ? 与 ~ 不再被当成句末标点。"""
+        self.assertEqual(
+            local_fallback_split("看这里 https://example.com/a?b=1 就明白了。", 0, 180),
+            ["看这里 https://example.com/a?b=1 就明白了。"],
+        )
+        self.assertEqual(
+            local_fallback_split("主页是 https://example.com/~alice/ 可以看看。", 0, 180),
+            ["主页是 https://example.com/~alice/ 可以看看。"],
+        )
+
+    def test_numeric_range_tilde_not_sentence_end(self):
+        """数字区间的波浪号是范围符，不切句。"""
+        self.assertEqual(
+            local_fallback_split("温度 10~~20 度都算正常。", 0, 180),
+            ["温度 10~~20 度都算正常。"],
+        )
+
+    def test_list_number_stays_with_its_item(self):
+        """编号与它后面的条目绑定，不挂到上一条末尾。"""
+        segments = local_fallback_split(
+            "操作很简单：1. 打开设置 2. 关闭开关 3. 重启。", 12, 180
+        )
+        self.assertFalse(any(seg.rstrip().endswith("2.") for seg in segments))
+        joined = "".join(segments)
+        self.assertIn("2. 关闭开关", joined)
+
+    def test_english_abbreviation_period_not_split(self):
+        """e.g. / p.m. 这类缩写点号不是句末。"""
+        text = "Some fruits, e.g. apples, are cheap and tasty."
+        self.assertEqual(local_fallback_split(text, 0, 180), [text])
+
+    def test_unclosed_bracket_does_not_disable_splitting(self):
+        """漏写一个右括号时，后续句子仍正常切分。"""
+        segments = local_fallback_split(
+            "今天好累(^_^ 想睡觉。明天再说吧。真的。", 12, 180
+        )
+        self.assertGreater(len(segments), 1)
+
+    def test_leading_pure_punct_not_standalone(self):
+        """首段是纯标点时挂到下一段，不单独发一条符号。"""
+        segments = local_fallback_split("！？（她笑了）我也是。", 12, 180)
+        self.assertFalse(segments[0].strip() in {"！？", "！", "？"})
+
+
+class TestCqCodeAtoms(unittest.TestCase):
+    """LLM 输出里的 CQ 码/提及记号不被当作动作括号。"""
+
+    def test_cq_code_stays_with_body(self):
+        segments = local_fallback_split(
+            "这是一句完整的话。[At:123456]这是第二句内容。", 0, 180
+        )
+        # CQ 码不单独成条，也不从中间切开，始终跟着它后面的正文。
+        self.assertFalse(any(seg.strip() == "[At:123456]" for seg in segments))
+        self.assertTrue(any("[At:123456]这是第二句内容。" in seg for seg in segments))
+
+    def test_face_code_not_standalone(self):
+        segments = local_fallback_split("[Face:1]早上好，今天也要加油。", 12, 180)
+        self.assertEqual(len(segments), 1)
