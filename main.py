@@ -95,9 +95,10 @@ __all__ = [
 ]
 
 
-# 与 AstrBot 内置 segmented_reply 保持一致：这些平台的适配器不支持
-# 主动调用 send_message（qq 官方 API 直接抛 NotImplementedError，
-# 微信公众号走基类空实现），补发只会让用户收到首段。
+# 与 AstrBot 内置 segmented_reply 保持一致，在这三类平台不做补发：
+# 微信公众号适配器的 send_by_session 必然抛异常；QQ 官方在缺少 msg_id
+# 时只 warning 跳过（群聊主动推送另有配额与频控）；钉钉主动消息同样受限。
+# 补发失败会让用户只收到首段，因此这些平台整条发出。
 _NO_PROACTIVE_SEND_PLATFORMS = frozenset(
     {"qq_official_webhook", "weixin_official_account", "dingtalk"}
 )
@@ -389,10 +390,10 @@ class SmartSegmentationPlugin(
 
     @staticmethod
     def _platform_supports_follow_up(event: AstrMessageEvent) -> bool:
-        """判断当前平台是否支持靠 send_message 追加消息。
+        """判断当前平台能否安全地靠 send_message 追加消息。
 
-        不支持主动发送的平台上补发会静默失败（用户只收到首段），此时
-        整条发出更符合预期；拿不到平台名时按支持处理。
+        三类平台上补发会失败或受配额限制（用户只收到首段），此时整条
+        发出更符合预期；拿不到平台名时按支持处理。
         """
         get_platform_name = getattr(event, "get_platform_name", None)
         if not callable(get_platform_name):
