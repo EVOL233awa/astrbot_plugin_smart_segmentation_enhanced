@@ -28,3 +28,28 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEmptyBracketIsNotAction(unittest.TestCase):
+    """空括号是函数调用/占位写法，不算动作段，也不单独成条。"""
+
+    def test_empty_brackets_not_action(self):
+        from segmentation import is_action_only_text
+
+        for text in ("（）", "()", "[]", "【】", "（）（）"):
+            self.assertFalse(is_action_only_text(text), text)
+
+    def test_action_bracket_still_recognized(self):
+        from segmentation import is_action_only_text
+
+        for text in ("（点头）", "（笑）。", "（她笑了）……", "(sigh)"):
+            self.assertTrue(is_action_only_text(text), text)
+
+    def test_empty_bracket_at_head_not_standalone(self):
+        from segmentation import local_fallback_split
+
+        self.assertEqual(
+            local_fallback_split("（）今天天气不错，出去走走吧。", 12, 180),
+            ["（）今天天气不错，出去走走吧。"],
+        )
+        self.assertEqual(local_fallback_split("（）“”", 12, 180), ["（）“”"])

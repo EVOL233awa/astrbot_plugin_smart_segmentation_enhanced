@@ -175,6 +175,9 @@ def is_action_only_text(text: str) -> bool:
     动作括号之后允许跟随纯标点/符号（如「（点头）。」「（笑）……」），
     这些收尾符号属于动作段本身；一旦括号后出现正文（汉字、字母、数字），
     就不再是动作段。
+
+    空括号（`（）`、`()`）不算动作段：它常见于函数调用、占位符等程序
+    写法，独立成条会切出只有一对括号的碎气泡。
     """
     stripped = str(text or "").strip()
     if len(stripped) < 2:
@@ -191,6 +194,8 @@ def is_action_only_text(text: str) -> bool:
             elif char == close_bracket:
                 depth -= 1
                 if depth == 0:
+                    if not stripped[1:index].strip():
+                        return False
                     trailing = stripped[index + 1:]
                     return all(
                         char.isspace()
