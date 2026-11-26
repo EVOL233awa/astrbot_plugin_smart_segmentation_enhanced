@@ -26,10 +26,6 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestEmptyBracketIsNotAction(unittest.TestCase):
     """空括号是函数调用/占位写法，不算动作段，也不单独成条。"""
 
@@ -53,3 +49,59 @@ class TestEmptyBracketIsNotAction(unittest.TestCase):
             ["（）今天天气不错，出去走走吧。"],
         )
         self.assertEqual(local_fallback_split("（）“”", 12, 180), ["（）“”"])
+
+
+class TestFullwidthToneSymbols(unittest.TestCase):
+    """全角波浪号、破折号属于语气符号，不是正文。"""
+
+    def test_fullwidth_tilde_is_pure_punct(self):
+        from segmentation import is_kaomoji_or_pure_punct
+
+        for text in ("～", "〜", "～～～", "—", "–", "―"):
+            self.assertTrue(is_kaomoji_or_pure_punct(text), text)
+        # 含汉字时不判为纯标点，避免正常语义短句被合并。
+        self.assertFalse(is_kaomoji_or_pure_punct("～好"))
+
+
+class TestPureSentencePunct(unittest.TestCase):
+    """可并入邻段的标点与语气符号要分开。"""
+
+    def test_sentence_punct_recognized(self):
+        from segmentation import is_pure_sentence_punct
+
+        for text in ("！？", "。", "，。", "！！？？", "，", "；", "……", "——"):
+            self.assertTrue(is_pure_sentence_punct(text), text)
+
+    def test_tone_symbols_not_sentence_punct(self):
+        """波浪号与颜文字是独立表达单元，不能当标点并进邻段。"""
+        from segmentation import is_pure_sentence_punct
+
+        for text in ("～", "〜", "～～～", ">_<", "qwq", "～！", "…～", "✨>_<"):
+            self.assertFalse(is_pure_sentence_punct(text), text)
+
+
+class TestSegmentationKeepsSourceOrder(unittest.TestCase):
+    """分段只能切开原文，不得改写、丢弃或重排任何字符。"""
+
+    def test_no_reorder_or_content_change(self):
+        from segmentation import local_fallback_split
+
+        cases = [
+            "✨>_<（点头）你好呀。",
+            "～（叹气）算了。",
+            "qwq（难过）怎么办。",
+            "（点头）✨>_<你好呀。",
+            "！？（她笑了）我也是。",
+            "她说完了。（）然后走了。",
+            "她笑了（点头）。好的。",
+            "今天真开心。（笑）✨>_<",
+        ]
+        for text in cases:
+            segments = local_fallback_split(text, 12, 180)
+            joined = "".join(segments).replace(" ", "").replace("\u3000", "")
+            expect = text.replace(" ", "").replace("\u3000", "")
+            self.assertEqual(joined, expect, f"分段改动了原文: {text!r}")
+
+
+if __name__ == "__main__":
+    unittest.main()

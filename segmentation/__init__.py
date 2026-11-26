@@ -17,6 +17,7 @@ from .core import (
     is_kaomoji_or_pure_punct,
     is_leading_punctuation,
     is_non_natural_language,
+    is_pure_sentence_punct,
     normalize_content_key,
     normalize_response_text_for_key,
     normalize_segments,
@@ -26,7 +27,6 @@ from .core import (
 from .protection import (
     has_protected_block,
     is_markdown_document,
-    safe_escape_segments,
     split_protected_blocks,
 )
 
@@ -106,6 +106,7 @@ __all__ = [
     "is_leading_punctuation",
     "is_markdown_document",
     "is_non_natural_language",
+    "is_pure_sentence_punct",
     "local_fallback_split",
     "mask_pipe_in_text",
     "merge_short_tail_segment",
@@ -118,7 +119,6 @@ __all__ = [
     "reconstruct_segments_from_model_output",
     "restore_pipe_in_segments",
     "robust_json_loads",
-    "safe_escape_segments",
     "segment_from_anchored_output",
     "split_protected_blocks",
     "split_segments_at_bracket_boundaries",

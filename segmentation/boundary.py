@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from .core import BRACKET_PAIRS, _as_nonneg_int, is_action_only_text, is_ascii_alnum, is_kaomoji_or_pure_punct
+from .core import BRACKET_PAIRS, _as_nonneg_int, is_action_only_text, is_ascii_alnum, is_kaomoji_or_pure_punct, is_pure_sentence_punct
 from .protection import _INLINE_CODE_RE, _LINK_IMAGE_RE
 
 # 打包冲刷的句末边界：出现即把累积文本封口，保证完整句子独立成段的优先级。
@@ -574,6 +574,9 @@ def _split_plain_text(
             and expanded[-1].rstrip()
             and expanded[-1].rstrip()[-1] not in _SENTENCE_BOUNDARY_CHARS
             and not is_action_only_text(expanded[-1])
+            # 前一段只是颜文字/纯标点时不回并：否则「✨>_<」会把后面的
+            # 动作括号吸进来，动作段随之失去原子性、整条不再分段。
+            and not is_kaomoji_or_pure_punct(expanded[-1])
         ):
             expanded[-1] += part
             continue
@@ -599,12 +602,14 @@ def _split_plain_text(
             merged[-1] += part
         else:
             merged.append(part)
-    # 首段是纯标点/颜文字时挂到下一段开头（「！？（她笑了）」），
-    # 避免首条气泡只有符号；动作段仍保持原子性。
+    # 首段只有句读标点时并到紧跟其后的段开头（「！？我也是。」），避免
+    # 首条气泡只有符号。这只在首段没有独立语义时成立：
+    # - 只并入相邻段，绝不跳过任何段（跳过后并会让内容提前，等于重排）；
+    # - 语气/表情符号（`～（叹气）`、`✨>_<（点头）`）不算句读标点，
+    #   它们是独立表达单元，不能与动作段粘成一条。
     if (
         len(merged) >= 2
-        and is_kaomoji_or_pure_punct(merged[0])
-        and not is_action_only_text(merged[0])
+        and is_pure_sentence_punct(merged[0])
     ):
         merged[1] = merged[0] + merged[1]
         del merged[0]
@@ -646,8 +651,14 @@ def split_text_at_brackets(text: str) -> list[str]:
         
         for open_bracket, close_bracket in BRACKET_PAIRS:
             if char == open_bracket:
-                # 修复中文失效：仅在 ASCII 字母数字、点、下划线后，才判定为程序函数调用并不予切分
-                if index > 0 and (is_ascii_alnum(text[index - 1]) or text[index - 1] in "._"):
+                # 函数调用/下标避让只对半角括号成立：`split()`、`arr[0]`
+                # 不切；全角括号（`qwq（难过）`、`注意【重点】`）不是代码语法，
+                # 前接字母时仍按动作段独立。
+                if (
+                    open_bracket in "(["
+                    and index > 0
+                    and (is_ascii_alnum(text[index - 1]) or text[index - 1] in "._")
+                ):
                     break
                 matched_pair = (open_bracket, close_bracket)
                 break

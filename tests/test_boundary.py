@@ -261,6 +261,60 @@ class TestInlineAtomProtection(unittest.TestCase):
         self.assertFalse(segments[0].strip() in {"！？", "！", "？"})
 
 
+class TestKaomojiBeforeActionBracket(unittest.TestCase):
+    """颜文字/语气符号紧贴动作括号时，动作段独立成条且顺序不变。"""
+
+    @staticmethod
+    def _assert_order_preserved(text: str, segments: list[str]) -> None:
+        """分段只能切开原文，不许重排：拼接结果必须等于原文。"""
+        assert_eq = "".join(segments).replace(" ", "")
+        assert_eq = assert_eq.replace("\u3000", "")
+        original = text.replace(" ", "").replace("\u3000", "")
+        if assert_eq != original:
+            raise AssertionError(
+                f"分段结果与原文顺序不一致: {segments!r} vs {text!r}"
+            )
+
+    def test_emoji_kaomoji_before_action_bracket(self):
+        text = "✨>_<（点头）你好呀。"
+        segments = local_fallback_split(text, 12, 180)
+        self.assertEqual(segments, ["✨>_<", "（点头）", "你好呀。"])
+        self._assert_order_preserved(text, segments)
+
+    def test_fullwidth_tilde_before_action_bracket(self):
+        text = "～（叹气）算了。"
+        segments = local_fallback_split(text, 12, 180)
+        self.assertEqual(segments, ["～", "（叹气）", "算了。"])
+        self._assert_order_preserved(text, segments)
+
+    def test_ascii_kaomoji_before_fullwidth_bracket(self):
+        """全角括号前接字母不是函数调用，动作段照常独立。"""
+        text = "qwq（难过）怎么办。"
+        segments = local_fallback_split(text, 12, 180)
+        self.assertEqual(segments, ["qwq", "（难过）", "怎么办。"])
+        self._assert_order_preserved(text, segments)
+
+    def test_action_bracket_at_head_absorbs_trailing_kaomoji(self):
+        text = "（点头）✨>_<"
+        segments = local_fallback_split(text, 12, 180)
+        self.assertEqual(segments, ["（点头）✨>_<"])
+        self._assert_order_preserved(text, segments)
+
+    def test_leading_punct_before_action_keeps_order(self):
+        """开头纯标点后紧跟动作段时，顺序保持原文顺序（不重排）。"""
+        text = "！？（她笑了）我也是。"
+        segments = local_fallback_split(text, 12, 180)
+        self._assert_order_preserved(text, segments)
+        self.assertFalse(any(seg.strip() in {"！？", "！", "？"} for seg in segments))
+
+    def test_leading_punct_merges_into_following_prose(self):
+        """开头纯标点后是正文时仍并成一条，不单独发符号气泡。"""
+        text = "！？我也是。"
+        segments = local_fallback_split(text, 12, 180)
+        self.assertEqual(segments, ["！？我也是。"])
+        self._assert_order_preserved(text, segments)
+
+
 class TestCqCodeAtoms(unittest.TestCase):
     """LLM 输出里的 CQ 码/提及记号不被当作动作括号。"""
 

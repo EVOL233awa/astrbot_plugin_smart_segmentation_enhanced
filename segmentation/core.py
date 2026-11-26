@@ -39,6 +39,24 @@ BRACKET_PAIRS: tuple[tuple[str, str], ...] = (
 _SEGMENT_LEADING_PUNCT_CHARS = frozenset("…·~—–―〜？！。.")
 
 
+# 可并入相邻段的标点：句读标点与停顿符（省略号、破折号）。
+# 它们只标记停顿，读起来是「话没说完」，跟着后面的动作段是自然语流。
+# 波浪号与颜文字不在此列——`～`、`✨>_<` 是完整的语气/表情表达单元，
+# 并进动作段会把两个单元粘成一条，打散又会丢失原有节奏。
+_PURE_SENTENCE_PUNCT_CHARS = frozenset(
+    "。！？!?，,、；;：:\"'“”‘’（）()【】[]{}《》「」『』"
+    "…·.—–― \u3000"
+)
+
+
+def is_pure_sentence_punct(text: str) -> bool:
+    """判断文本是否只由句读标点与停顿符组成（不含波浪号与颜文字）。"""
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    return all(char in _PURE_SENTENCE_PUNCT_CHARS for char in stripped)
+
+
 _LEADING_PUNCTUATION_RE = re.compile(
     r"^(?:…+|\.{2,}|·+|~+|—+|–+|―+|〜+|？+|！+|。{2,})+$"
 )
@@ -70,8 +88,8 @@ def is_kaomoji_or_pure_punct(text: str) -> bool:
     if re.search(r"[\u4e00-\u9fa5]", text):
         return False
         
-    # 2. 纯标点检测
-    puncts = set("。！？!?~.……,，、;；:：'\"()（）【】[]{}<>《》 ")
+    # 2. 纯标点检测：半角与全角的波浪号、破折号同为语气符号，不能当成正文
+    puncts = set("。！？!?~～〜.……,，、;；:：'\"()（）【】[]{}<>《》—–― ")
     if all(c in puncts for c in text):
         return True
         
