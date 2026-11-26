@@ -4,6 +4,23 @@ AstrBot 智能分段插件（增强版）的版本变更记录。
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [1.5.6] - 2026-11-27
+
+颜文字不再与动作段粘成一条，消息原文不再被改动。
+
+### Fixed
+
+- 颜文字或波浪号紧贴动作括号时，动作段独立成条且顺序保持原文：`✨>_<（点头）你好呀。`、`～（叹气）算了。` 各自拆成三条。
+- 全角括号前的字母不再触发函数调用避让：`qwq（难过）怎么办。` 能拆出独立的动作段；`split()`、`arr[0]` 仍不切。
+
+### Changed
+
+- 分段只切开原文，不改变顺序与内容；省略号、破折号与句读标点仍可并入相邻段，波浪号与颜文字保持独立。
+
+### Removed
+
+- 半角尖括号不再转义为全角（`<` → `＜`、`>` → `＞`）。纯文本链路（NapCat、Telegram 等）不解析 HTML，转义只会改动消息原文；代码块与行内代码本来就不受影响。若所在平台会把 `<...>` 当作 HTML 解析，需自行在提示词中约束。
+
 ## [1.5.5] - 2026-11-24
 
 符号不再误删误切，追问不再等旧回复。
@@ -383,3 +400,4 @@ AstrBot 智能分段插件（增强版）的版本变更记录。
 [1.5.3]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.3
 [1.5.4]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.4
 [1.5.5]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.5
+[1.5.6]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.6
