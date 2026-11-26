@@ -4,6 +4,15 @@ AstrBot 智能分段插件（增强版）的版本变更记录。
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [1.5.7] - 2026-11-27
+
+句尾颜文字不再吞掉动作段。
+
+### Fixed
+
+- 句尾挂着颜文字或语气符号时，紧跟的动作括号独立成条：`未花睡不着，脑袋里全都是老师，怎么办啦>_<（把被子拉到耳朵边…）` 分成两条，不再整条连成一段。
+- `嗯～（思考）这样啊。` 同样拆成三条；停顿符结尾（`……（叹气）`）与数字结尾（`1<2（例子）`）仍按句中插入语回并。
+
 ## [1.5.6] - 2026-11-27
 
 颜文字不再与动作段粘成一条，消息原文不再被改动。
@@ -401,3 +410,4 @@ AstrBot 智能分段插件（增强版）的版本变更记录。
 [1.5.4]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.4
 [1.5.5]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.5
 [1.5.6]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.6
+[1.5.7]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.7
