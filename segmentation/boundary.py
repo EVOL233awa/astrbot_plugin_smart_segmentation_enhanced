@@ -45,6 +45,28 @@ def _ends_at_hard_sentence(text: str) -> bool:
 _SENTENCE_BOUNDARY_CHARS = frozenset("。！？!?~…")
 
 
+# 颜文字/语气符号的特征字符：出现在句尾时，后面的括号是动作而非句中
+# 插入语（`怎么办啦>_<（把被子…）`），不能并进前句。
+# 停顿符（省略号、破折号）不在此列——`……（叹气）` 仍是同一句话的延续。
+_KAOMOJI_TAIL_CHARS = frozenset("><_^*\\/|~=～〜°¯✨☆ㅠㅋ")
+
+
+def _ends_with_kaomoji(text: str) -> bool:
+    """判断文本末尾的符号串是否带颜文字/语气特征。
+
+    只扫末尾连续的符号；遇到字母、数字或汉字即停止，避免把
+    `1<2（例子）` 这类正文误判成颜文字。
+    """
+    stripped = text.rstrip()
+    for index in range(len(stripped) - 1, -1, -1):
+        char = stripped[index]
+        if char.isalnum():
+            return False
+        if char in _KAOMOJI_TAIL_CHARS:
+            return True
+    return False
+
+
 _LEFT_BOUNDARY_CHARS = frozenset("（([【“‘「『《")
 
 # 开括号到闭括号的映射：扫描时先确认配对，未闭合的括号按普通字符处理，
@@ -577,6 +599,9 @@ def _split_plain_text(
             # 前一段只是颜文字/纯标点时不回并：否则「✨>_<」会把后面的
             # 动作括号吸进来，动作段随之失去原子性、整条不再分段。
             and not is_kaomoji_or_pure_punct(expanded[-1])
+            # 句尾挂着颜文字/语气符号时（`怎么办啦>_<（动作）`），括号是
+            # 动作而不是句中插入语，同样不回并。
+            and not _ends_with_kaomoji(expanded[-1])
         ):
             expanded[-1] += part
             continue

@@ -314,6 +314,43 @@ class TestKaomojiBeforeActionBracket(unittest.TestCase):
         self.assertEqual(segments, ["！？我也是。"])
         self._assert_order_preserved(text, segments)
 
+    def test_kaomoji_at_sentence_tail_before_action(self):
+        """句尾挂着颜文字时，后面的括号是动作而非句中插入语。"""
+        text = (
+            "未花睡不着，脑袋里全都是老师，怎么办啦>_<"
+            "（把被子拉到耳朵边，盯着屏幕上那行字，又飞快补了一句）"
+        )
+        segments = local_fallback_split(text, 12, 180)
+        self.assertEqual(
+            segments,
+            [
+                "未花睡不着，脑袋里全都是老师，怎么办啦>_<",
+                "（把被子拉到耳朵边，盯着屏幕上那行字，又飞快补了一句）",
+            ],
+        )
+        self._assert_order_preserved(text, segments)
+
+    def test_tone_symbol_at_sentence_tail_before_action(self):
+        """语气符号结尾同样按动作段独立。"""
+        text = "嗯～（思考）这样啊。"
+        segments = local_fallback_split(text, 12, 180)
+        self.assertEqual(segments, ["嗯～", "（思考）", "这样啊。"])
+        self._assert_order_preserved(text, segments)
+
+    def test_pause_at_sentence_tail_still_merges_action(self):
+        """停顿符结尾仍按句中插入语回并，不改既有行为。"""
+        text = "……（叹气）算了。"
+        segments = local_fallback_split(text, 12, 180)
+        self.assertEqual(segments, ["……（叹气）算了。"])
+        self._assert_order_preserved(text, segments)
+
+    def test_digits_before_bracket_still_merge(self):
+        """数字结尾不是颜文字，括号仍按插入语回并。"""
+        text = "1<2（例子）这样。"
+        segments = local_fallback_split(text, 12, 180)
+        self.assertEqual(segments, ["1<2（例子）这样。"])
+        self._assert_order_preserved(text, segments)
+
 
 class TestCqCodeAtoms(unittest.TestCase):
     """LLM 输出里的 CQ 码/提及记号不被当作动作括号。"""
