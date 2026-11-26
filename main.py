@@ -54,7 +54,6 @@ from .segmentation import (
     has_protected_block,
     local_fallback_split,
     merge_short_tail_segment,
-    safe_escape_segments,
     stabilize_segment_lengths,
 )
 
@@ -90,7 +89,6 @@ __all__ = [
     "has_protected_block",
     "local_fallback_split",
     "merge_short_tail_segment",
-    "safe_escape_segments",
     "stabilize_segment_lengths",
 ]
 

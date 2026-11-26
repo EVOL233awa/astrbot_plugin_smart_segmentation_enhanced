@@ -206,17 +206,31 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
             )
         )
 
-    def test_kaomoji_leading_greater_than_kept(self):
-        """颜文字形式的尖括号保持原样，只有贴文字的尖括号才转全角。"""
+    def test_angle_brackets_kept_as_is(self):
+        """半角尖括号保持原文，不再转义成全角。"""
         self.assertEqual(local_fallback_split(">_<", 0, 180), [">_<"])
         self.assertEqual(
             local_fallback_split("（动作）>_< 你好。", 8, 180),
             ["（动作）", ">_< 你好。"],
         )
-        # 贴字母的尖括号仍按原规则转义，规避平台物理吞噬。
         self.assertEqual(
             local_fallback_split("如果 a<b 就报错。", 0, 180),
-            ["如果 a＜b 就报错。"],
+            ["如果 a<b 就报错。"],
+        )
+
+    def test_kaomoji_pair_with_emoji_prefix_kept(self):
+        """颜文字与正文里的尖括号都保持原样。"""
+        self.assertEqual(
+            local_fallback_split("✨>_<你好呀。", 0, 180),
+            ["✨>_<你好呀。"],
+        )
+        self.assertEqual(
+            local_fallback_split("（动作）✨>_<", 0, 180),
+            ["（动作）✨>_<"],
+        )
+        self.assertEqual(
+            local_fallback_split("如果 a>b<c 就报错。", 0, 180),
+            ["如果 a>b<c 就报错。"],
         )
 
     def test_global_max_segments_with_protected_block(self):
@@ -254,10 +268,10 @@ class TestMarkdownBlockRecognition(unittest.TestCase):
             local_fallback_split("运行 `a<b>c` 就可以了，别担心。", 12, 180),
             ["运行 `a<b>c` 就可以了，别担心。"],
         )
-        # 普通正文里的尖括号仍然转义
+        # 普通正文里的尖括号同样保持原文
         self.assertEqual(
             local_fallback_split("请把 <tag> 替换掉。", 12, 180),
-            ["请把 ＜tag＞ 替换掉。"],
+            ["请把 <tag> 替换掉。"],
         )
 
     def test_adjacent_blocks_not_merged_over_max_chars(self):

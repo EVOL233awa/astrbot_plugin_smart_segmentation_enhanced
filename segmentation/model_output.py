@@ -7,7 +7,6 @@ import re
 from typing import Any
 
 from .core import _LEADING_PUNCTUATION_RE, _SEGMENT_LEADING_PUNCT_CHARS, _as_nonneg_int, is_action_only_text, is_kaomoji_or_pure_punct, is_leading_punctuation, normalize_content_key, normalize_segments, strip_thinking_content
-from .protection import safe_escape_segments
 from .boundary import (
     _LEFT_BOUNDARY_CHARS,
     _PAUSE_BREAK_MIN_CHARS,
@@ -461,4 +460,4 @@ def parse_segments_from_model_output(
             short_tail_threshold,
         )
 
-    return safe_escape_segments(final_merged)
+    return final_merged

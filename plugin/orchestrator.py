@@ -23,7 +23,6 @@ from ..segmentation import (
     parse_raw_model_segments,
     parse_segments_from_model_output,
     restore_pipe_in_segments,
-    safe_escape_segments,
     segment_from_anchored_output,
     stabilize_segment_lengths,
 )
@@ -174,7 +173,6 @@ class OrchestrationMixin:
                 settings.max_chars_per_segment,
                 settings.short_tail_threshold,
             )
-        final = safe_escape_segments(final)
         return stabilize_segment_lengths(
             final,
             max_segments=settings.max_segments,

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 from .core import _as_nonneg_int, is_non_natural_language, normalize_segments, strip_thinking_content
-from .protection import has_protected_block, is_markdown_document, safe_escape_segments, split_protected_blocks
+from .protection import has_protected_block, is_markdown_document, split_protected_blocks
 from .boundary import _PAUSE_BREAK_MIN_CHARS, _split_plain_text
 from .packing import (
     apply_force_split_to_segments,
@@ -163,12 +163,12 @@ def local_fallback_split(
 
     # 纯 JSON/代码等非自然语言整体发送；若同时含受保护块，则按块解析而非整条直发。
     if is_non_natural_language(cleaned) and not has_protected_block(cleaned):
-        return safe_escape_segments([cleaned.strip()])
+        return [cleaned.strip()]
 
     # 保留 v1.3.0 Markdown 区域保护：整篇 Markdown 整体放行，
     # 避免拆成多条后耗尽分段预算，把剩余内容全部挤到末尾。
     if is_markdown_document(cleaned):
-        return safe_escape_segments([cleaned.strip()])
+        return [cleaned.strip()]
 
     runs: list[tuple[str, list[str]]] = []
     text_parts: list[str] = []
@@ -220,4 +220,4 @@ def local_fallback_split(
         packed = _force_merge_to_max_segments(packed, max_segments, max_chars)
     if merge_short_tail:
         packed = merge_short_tail_segment(packed, max_chars, short_tail_threshold)
-    return safe_escape_segments(packed)
+    return packed
