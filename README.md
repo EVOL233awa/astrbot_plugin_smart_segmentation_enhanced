@@ -59,9 +59,9 @@ flowchart TB
 
     subgraph Engine["分段引擎"]
         Router{"segmenter"}
+        Protect["结构保护<br/>代码 / 表格 / JSON / 受保护块"]
         Local["本地切分<br/>句子 / 标点 / 括号 / 引号"]
-        Protect["结构保护<br/>代码 / 表格 / JSON / 锚点"]
-        LLM["LLM 分段<br/>管道符协议"]
+        LLM["LLM 分段<br/>管道符协议 / 锚点替换"]
         Stabilize["长度稳定<br/>全局打包"]
     end
 
@@ -75,9 +75,9 @@ flowchart TB
     Chain["MessageChain"]
 
     H1 --> Router
-    Router -->|local| Local
-    Router -->|llm| Protect
-    Protect --> LLM
+    Router --> Protect
+    Protect -->|local| Local
+    Protect -->|llm| LLM
     LLM -->|调用| Provider
     LLM --> Stabilize
     Local --> Stabilize
