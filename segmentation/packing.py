@@ -52,8 +52,12 @@ def compute_target_segment_length(
 _ASCII_SENTENCE_TAIL_CHARS = frozenset(".!?,;:\"'")
 
 
-def _join_adjacent(left: str, right: str, limit: int = 0) -> str:
-    """Join two segments without physically gluing ASCII words together."""
+def _join_adjacent(left: str, right: str) -> str:
+    """Join two segments without physically gluing ASCII words together.
+
+    只负责补空格，不负责长度：调用方用 ``len(merged)`` 判断是否接受合并。
+    若在这里为凑长度上限退回无空格拼接，就会出现「p.m.We」这类粘连。
+    """
     if not left:
         return right
     if not right:
@@ -66,9 +70,7 @@ def _join_adjacent(left: str, right: str, limit: int = 0) -> str:
         is_ascii_alnum(right[0])
         and (is_ascii_alnum(left[-1]) or left[-1] in _ASCII_SENTENCE_TAIL_CHARS)
     ):
-        spaced = left + " " + right
-        if limit <= 0 or len(spaced) <= limit:
-            return spaced
+        return left + " " + right
     return left + right
 
 
@@ -94,7 +96,7 @@ def _merge_to_global_max(
                 or _is_unsplittable_segment(right)
             ):
                 continue
-            merged = _join_adjacent(left, right, max_chars if max_chars > 0 else 0)
+            merged = _join_adjacent(left, right)
             if max_chars > 0 and len(merged) > max_chars:
                 continue
             if best_length is None or len(merged) < best_length:
@@ -105,7 +107,6 @@ def _merge_to_global_max(
         result[best_index] = _join_adjacent(
             result[best_index],
             result[best_index + 1],
-            max_chars if max_chars > 0 else 0,
         )
         del result[best_index + 1]
     return result
@@ -126,13 +127,12 @@ def _force_join_for_cap(left: str, right: str) -> str:
     # 硬上限合并也不能把行/段落边界粘掉：任一侧带换行时保留一个换行。
     if "\n" in left_ws or "\n" in right_ws:
         return left_body + "\n" + right_body
-    return _join_adjacent(left_body, right_body, 0)
+    return _join_adjacent(left_body, right_body)
 
 
 def _force_merge_to_max_segments(
     segments: list[str],
     max_segments: int,
-    max_chars: int = 0,
 ) -> list[str]:
     """Final fallback that guarantees the segment count hard cap is met."""
     if max_segments <= 0 or len(segments) <= max_segments:
@@ -140,15 +140,14 @@ def _force_merge_to_max_segments(
 
     result = list(segments)
     while len(result) > max_segments:
-        best_index: int | None = None
+        # 循环条件保证 result 至少两段，range 非空，首轮必选出 best_index。
+        best_index = 0
         best_length: int | None = None
         for index in range(len(result) - 1):
             merged = _force_join_for_cap(result[index], result[index + 1])
             if best_length is None or len(merged) < best_length:
                 best_index = index
                 best_length = len(merged)
-        if best_index is None:
-            break
         result[best_index] = _force_join_for_cap(
             result[best_index],
             result[best_index + 1],
@@ -269,11 +268,7 @@ def pack_segments_to_target(
     if max_segs > 0:
         packed = _merge_to_global_max(packed, max_segs, max_chars or effective_target)
         if len(packed) > max_segs:
-            forced = _force_merge_to_max_segments(
-                packed,
-                max_segs,
-                max_chars or effective_target,
-            )
+            forced = _force_merge_to_max_segments(packed, max_segs)
             # 强制合并只有真的产生装不下的段时才尝试拼回重排，
             # 避免重排改写大量本可合规收场的布局。
             if _has_overlong_ordinary_segment(forced, max_chars):
@@ -348,7 +343,7 @@ def _pack_with_priority_cuts(
             packed.extend(_flush(current))
             current = segment
             continue
-        candidate = _join_adjacent(current, segment, target)
+        candidate = _join_adjacent(current, segment)
         if len(candidate) <= target:
             current = candidate
             continue
@@ -451,21 +446,38 @@ def _is_unsplittable_segment(segment: str) -> bool:
     )
 
 
+def _ends_with_force_symbol(text: str, symbols: list[str] | None) -> bool:
+    """段尾是否正好落在强制切分符号上（该符号按约定留在前段末尾）。"""
+    if not symbols:
+        return False
+    ending = unicodedata.normalize("NFKC", text.rstrip())
+    for symbol in symbols:
+        key = unicodedata.normalize("NFKC", str(symbol))
+        if key and ending.endswith(key):
+            return True
+    return False
+
+
 def merge_short_tail_segment(
     segments: list[str],
     max_chars: int,
     threshold: int,
+    *,
+    force_split_symbols: list[str] | None = None,
 ) -> list[str]:
     """短尾合并（§5.3）：所有切分与约束完成后只检查最后一段。
 
     末段长度 ≤ threshold 且前后两段都不是原子块/受保护块时并入前一段；
     合并后超过 max_chars 则放弃（硬单条长度优先）。单次合并，不递归。
+    强制切分产生的短尾不合并：配置约定「其他规则都拦不住」。
     """
     if threshold <= 0 or len(segments) < 2:
         return list(segments)
     tail = segments[-1].strip()
     previous = segments[-2].strip()
     if not tail or len(tail) > threshold:
+        return list(segments)
+    if _ends_with_force_symbol(previous, force_split_symbols):
         return list(segments)
     if (
         _is_unsplittable_segment(tail)
@@ -474,7 +486,7 @@ def merge_short_tail_segment(
         or has_protected_block(previous)
     ):
         return list(segments)
-    merged = _join_adjacent(previous, tail, 0)
+    merged = _join_adjacent(previous, tail)
     if max_chars > 0 and len(merged) > max_chars:
         return list(segments)
     return segments[:-2] + [merged]
@@ -506,7 +518,7 @@ def apply_no_split_boundaries(
             and not has_protected_block(segment)
         )
         if mergeable:
-            merged = _join_adjacent(previous, segment, 0)
+            merged = _join_adjacent(previous, segment)
             if max_chars <= 0 or len(merged) <= max_chars:
                 result[-1] = merged
                 continue
@@ -583,6 +595,9 @@ def attach_symbol_only_pieces(
 
 def _hard_split_overlong(segment: str, max_chars: int) -> list[str]:
     """Split a long ordinary segment at punctuation or whitespace."""
+    if max_chars <= 0:
+        # 上限为 0 表示不限制；此处必须提前返回，否则下面的循环不会推进。
+        return [segment]
     parts = []
     remaining = segment
     while len(remaining) > max_chars:

@@ -65,6 +65,21 @@ class TestSegmenterMigration(unittest.TestCase):
         self.assertEqual(settings.segmenter, "llm")
         self.assertEqual(config.saved, 0)
 
+    def test_explicit_llm_survives_default_legacy_key(self):
+        """旧键仍是默认 true 时，用户显式选的 llm 不能被迁移覆盖回 local。"""
+        config = SaveableConfig(
+            {
+                "enabled": True,
+                "use_local_only": True,
+                "segmenter": "llm",
+            }
+        )
+        settings = SmartSegmentationPlugin(FakeContext(), config)._get_settings()
+        self.assertEqual(settings.segmenter, "llm")
+        self.assertEqual(config["segmenter"], "llm")
+        self.assertIs(config["segmenter_migrated"], True)
+        self.assertEqual(config.saved, 1)
+
     def test_invalid_segmenter_falls_back_to_local(self):
         config = SaveableConfig(
             {
@@ -84,6 +99,21 @@ class TestSegmenterMigration(unittest.TestCase):
         # 模拟用户随后把 segmenter 改为 llm（旧键仍残留 true）
         config["segmenter"] = "llm"
         self.assertEqual(plugin._get_settings().segmenter, "llm")
+
+
+class TestBooleanConfigParsing(unittest.TestCase):
+    """手写 JSON 里的 0/1 必须按布尔语义解析，不能回落到默认值。"""
+
+    def test_integer_zero_disables_plugin(self):
+        self.assertIsNone(
+            SmartSegmentationPlugin(FakeContext(), {"enabled": 0})._get_settings()
+        )
+
+    def test_integer_one_enables_plugin(self):
+        settings = SmartSegmentationPlugin(
+            FakeContext(), {"enabled": 1}
+        )._get_settings()
+        self.assertIsNotNone(settings)
 
 
 class TestSmartDelaySymbolConflict(unittest.TestCase):

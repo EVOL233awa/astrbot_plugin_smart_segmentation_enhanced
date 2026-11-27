@@ -87,6 +87,19 @@ class TestEnglishSentenceJoin(unittest.TestCase):
             "今天开饭了。明天见。",
         )
 
+    def test_tight_target_does_not_glue_words(self):
+        """目标长度装不下带空格合并时保持分段，不能退化成无空格粘连。"""
+        from segmentation.packing import pack_segments_to_target
+
+        self.assertEqual(
+            pack_segments_to_target(
+                ["I like your cat.", "Dogs run."],
+                25,
+                max_chars_per_segment=25,
+            ),
+            ["I like your cat.", "Dogs run."],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -137,6 +150,26 @@ class TestStageFourStageOptions(unittest.TestCase):
         self.assertEqual(
             merge_short_tail_segment(["第一段。", "好。"], 0, 0),
             ["第一段。", "好。"],
+        )
+
+    def test_merge_short_tail_does_not_undo_force_split(self):
+        """强制切分产生的短尾不合并：配置约定「其他规则都拦不住」。"""
+        from segmentation import merge_short_tail_segment
+
+        self.assertEqual(
+            merge_short_tail_segment(
+                ["a|", "b"], 0, 2, force_split_symbols=["|"]
+            ),
+            ["a|", "b"],
+        )
+        self.assertEqual(
+            local_fallback_split(
+                "a|b",
+                0,
+                force_split_symbols=["|"],
+                merge_short_tail=True,
+            ),
+            ["a|", "b"],
         )
 
     def test_apply_no_split_boundaries(self):

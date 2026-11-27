@@ -15,6 +15,7 @@ from ..segmentation import (
     apply_no_split_boundaries,
     build_anchor_masking,
     build_segmentation_prompt,
+    expand_under_split_natural_segments,
     has_protected_block,
     is_markdown_document,
     local_fallback_split,
@@ -24,8 +25,25 @@ from ..segmentation import (
     parse_segments_from_model_output,
     restore_pipe_in_segments,
     segment_from_anchored_output,
+    split_segments_at_bracket_boundaries,
     stabilize_segment_lengths,
 )
+from ..segmentation.packing import attach_symbol_only_pieces
+
+
+def _mask_force_symbols(
+    symbols: list[str] | None,
+    pipe_placeholder: str,
+) -> list[str]:
+    """把强制切分符号里的 ``|`` 换成管道占位符。
+
+    LLM 路径在掩码文本上做强制切分，原文的 ``|`` 已被替换为占位符；
+    符号本身也要同步替换才能在掩码文本上命中，返回前由
+    ``restore_pipe_in_segments`` 统一还原。
+    """
+    if not symbols:
+        return []
+    return [str(symbol).replace("|", pipe_placeholder) for symbol in symbols]
 
 
 class OrchestrationMixin:
@@ -94,15 +112,44 @@ class OrchestrationMixin:
         if not raw_text:
             return [text]
 
+        options = self._split_option_kwargs(settings)
+        options["force_split_symbols"] = _mask_force_symbols(
+            settings.force_split_symbols,
+            pipe_placeholder,
+        )
         segments = parse_segments_from_model_output(
             raw_text,
             fallback_text=masked_text,
             max_segments=settings.max_segments,
             max_chars_per_segment=settings.max_chars_per_segment,
             pause_min_chars=settings.ellipsis_pause_min_chars,
-            **self._split_option_kwargs(settings),
+            **options,
         )
         return restore_pipe_in_segments(segments, pipe_placeholder)
+
+    @staticmethod
+    def _repair_expanded_segments(
+        segments: list[str],
+        pause_min_chars: int,
+    ) -> list[str]:
+        """锚点还原后的文本段补齐本地切分，与普通 LLM 路径同口径。
+
+        受保护块段原样保留；普通文本段补切漏切的句子与动作括号，
+        避免“同一段话有没有代码块”导致分段结果不同。
+        """
+        repaired: list[str] = []
+        for segment in segments:
+            if has_protected_block(segment):
+                repaired.append(segment)
+                continue
+            for part in expand_under_split_natural_segments(
+                [segment],
+                pause_min_chars=pause_min_chars,
+            ):
+                repaired.extend(
+                    split_segments_at_bracket_boundaries([part], max_segments=0)
+                )
+        return repaired
 
     async def _segment_text_with_anchors(
         self,
@@ -127,14 +174,13 @@ class OrchestrationMixin:
                 **self._split_option_kwargs(settings),
             )
 
-        masking = build_anchor_masking(text)
-        if masking is None:
-            return _local_fallback()
-        if not masking.has_text:
-            # 只有受保护块没有文本区间：不调用 LLM（§5.6 步骤 8）。
-            return _local_fallback()
-
         try:
+            masking = build_anchor_masking(text)
+            if masking is None:
+                return _local_fallback()
+            if not masking.has_text:
+                # 只有受保护块没有文本区间：不调用 LLM（§5.6 步骤 8）。
+                return _local_fallback()
             masked_text, pipe_placeholder = mask_pipe_in_text(masking.masked_text)
             budget = max(1, settings.max_segments - len(masking.anchors))
             prompt = build_segmentation_prompt(masked_text, settings.style, budget)
@@ -160,6 +206,11 @@ class OrchestrationMixin:
             logger.warning("智能分段锚点路径失败，已降级本地切分: %s", exc)
             return _local_fallback()
 
+        # 还原后的普通文本段补齐本地切分，口径与普通 LLM 路径一致。
+        expanded = self._repair_expanded_segments(
+            expanded,
+            settings.ellipsis_pause_min_chars,
+        )
         # 还原域后处理：与普通 LLM 路径语义一致（软约束在硬上限之前）。
         final = apply_no_split_boundaries(
             expanded,
@@ -167,15 +218,20 @@ class OrchestrationMixin:
             settings.max_chars_per_segment,
         )
         final = apply_force_split_to_segments(final, settings.force_split_symbols)
-        if settings.merge_short_tail:
-            final = merge_short_tail_segment(
-                final,
-                settings.max_chars_per_segment,
-                settings.short_tail_threshold,
-            )
-        return stabilize_segment_lengths(
+        final = attach_symbol_only_pieces(final, settings.force_split_symbols)
+        # 与本地/普通 LLM 路径同序：先落硬上限，再处理短尾，
+        # 避免 stabilize 新切出的短尾逃过合并。
+        final = stabilize_segment_lengths(
             final,
             max_segments=settings.max_segments,
             max_chars_per_segment=settings.max_chars_per_segment,
             pause_min_chars=settings.ellipsis_pause_min_chars,
         )
+        if settings.merge_short_tail:
+            final = merge_short_tail_segment(
+                final,
+                settings.max_chars_per_segment,
+                settings.short_tail_threshold,
+                force_split_symbols=settings.force_split_symbols,
+            )
+        return final

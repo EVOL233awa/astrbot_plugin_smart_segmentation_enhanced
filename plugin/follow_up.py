@@ -116,8 +116,13 @@ class FollowUpMixin:
         segments: list[str],
         settings: SegmentationSettings,
         first_segment: str | None = None,
+        fast_forward: bool = False,
     ) -> str:
-        """登记当前会话中等待后台补发的所有后续分段消息。"""
+        """登记当前会话中等待后台补发的所有后续分段消息。
+
+        fast_forward 为真表示登记时已有更新消息到达：剩余分段立即
+        按快速间隔发完，避免新回复等待旧队列。
+        """
         self._prune_expired_pending_follow_ups()
         pending_id = uuid4().hex
         self._pending_follow_ups[pending_id] = PendingFollowUp(
@@ -135,6 +140,7 @@ class FollowUpMixin:
             jitter_max_seconds=settings.jitter_max_seconds,
             smart_decrease_symbols=list(settings.smart_decrease_symbols),
             smart_decrease_seconds=settings.smart_decrease_seconds,
+            fast_forward=fast_forward,
             fast_forward_delay_seconds=settings.fast_forward_delay,
         )
         return pending_id

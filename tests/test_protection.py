@@ -221,8 +221,8 @@ class TestSegmentationGuardAndFallback(unittest.TestCase):
     def test_kaomoji_pair_with_emoji_prefix_kept(self):
         """颜文字与正文里的尖括号都保持原样。"""
         self.assertEqual(
-            local_fallback_split("✨>_<你好呀。", 0, 180),
-            ["✨>_<你好呀。"],
+            local_fallback_split("✨>_<收到啦。", 0, 180),
+            ["✨>_<收到啦。"],
         )
         self.assertEqual(
             local_fallback_split("（动作）✨>_<", 0, 180),

@@ -72,5 +72,25 @@ class TestInlineMarkerSafety(unittest.TestCase):
         )
 
 
+class TestThematicBreakFallback(unittest.TestCase):
+    """分隔线符号间夹空格时，heavy 清洗也要整行清掉（无论有无 mdit）。"""
+
+    def test_spaced_thematic_breaks_removed(self):
+        for divider in ("* * *", "_ _ _", "- - -", "***", "___"):
+            self.assertEqual(
+                clean_markdown_by_mode(divider, "heavy"), "", divider
+            )
+
+    def test_spaced_thematic_break_line_inside_paragraph(self):
+        cleaned = clean_markdown_by_mode("上一段。\n* * *\n下一段。", "heavy")
+        self.assertEqual(cleaned.replace("\n", "").strip(), "上一段。下一段。")
+
+    def test_light_keeps_thematic_break(self):
+        self.assertEqual(clean_markdown_by_mode("* * *", "light"), "* * *")
+
+    def test_list_item_still_cleaned(self):
+        self.assertEqual(clean_markdown_by_mode("* 项目一", "heavy"), "项目一")
+
+
 if __name__ == "__main__":
     unittest.main()

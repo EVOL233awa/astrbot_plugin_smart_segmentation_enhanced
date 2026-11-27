@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from segmentation import (
     local_fallback_split,
+    parse_segments_from_model_output,
 )
 from segmentation.boundary import _force_split_by_symbols
 
@@ -237,11 +238,11 @@ class TestInlineAtomProtection(unittest.TestCase):
     def test_list_number_stays_with_its_item(self):
         """编号与它后面的条目绑定，不挂到上一条末尾。"""
         segments = local_fallback_split(
-            "操作很简单：1. 打开设置 2. 关闭开关 3. 重启。", 12, 180
+            "操作很简单：1. 先备份 2. 再升级 3. 重启。", 12, 180
         )
         self.assertFalse(any(seg.rstrip().endswith("2.") for seg in segments))
         joined = "".join(segments)
-        self.assertIn("2. 关闭开关", joined)
+        self.assertIn("2. 再升级", joined)
 
     def test_english_abbreviation_period_not_split(self):
         """e.g. / p.m. 这类缩写点号不是句末。"""
@@ -251,7 +252,7 @@ class TestInlineAtomProtection(unittest.TestCase):
     def test_unclosed_bracket_does_not_disable_splitting(self):
         """漏写一个右括号时，后续句子仍正常切分。"""
         segments = local_fallback_split(
-            "今天好累(^_^ 想睡觉。明天再说吧。真的。", 12, 180
+            "会议太长(^_^ 想休息。明天再聊吧。真的。", 12, 180
         )
         self.assertGreater(len(segments), 1)
 
@@ -276,9 +277,9 @@ class TestKaomojiBeforeActionBracket(unittest.TestCase):
             )
 
     def test_emoji_kaomoji_before_action_bracket(self):
-        text = "✨>_<（点头）你好呀。"
+        text = "✨>_<（点头）收到啦。"
         segments = local_fallback_split(text, 12, 180)
-        self.assertEqual(segments, ["✨>_<", "（点头）", "你好呀。"])
+        self.assertEqual(segments, ["✨>_<", "（点头）", "收到啦。"])
         self._assert_order_preserved(text, segments)
 
     def test_fullwidth_tilde_before_action_bracket(self):
@@ -289,9 +290,9 @@ class TestKaomojiBeforeActionBracket(unittest.TestCase):
 
     def test_ascii_kaomoji_before_fullwidth_bracket(self):
         """全角括号前接字母不是函数调用，动作段照常独立。"""
-        text = "qwq（难过）怎么办。"
+        text = "orz（沮丧）怎么办。"
         segments = local_fallback_split(text, 12, 180)
-        self.assertEqual(segments, ["qwq", "（难过）", "怎么办。"])
+        self.assertEqual(segments, ["orz", "（沮丧）", "怎么办。"])
         self._assert_order_preserved(text, segments)
 
     def test_action_bracket_at_head_absorbs_trailing_kaomoji(self):
@@ -317,31 +318,31 @@ class TestKaomojiBeforeActionBracket(unittest.TestCase):
     def test_kaomoji_at_sentence_tail_before_action(self):
         """句尾挂着颜文字时，后面的括号是动作而非句中插入语。"""
         text = (
-            "未花睡不着，脑袋里全都是老师，怎么办啦>_<"
-            "（把被子拉到耳朵边，盯着屏幕上那行字，又飞快补了一句）"
+            "闹钟响了三遍，我还是没等到回复，越想越急啊>_<"
+            "（把手机扣在桌面上，盯着屏幕上的时间，又补了一句）"
         )
         segments = local_fallback_split(text, 12, 180)
         self.assertEqual(
             segments,
             [
-                "未花睡不着，脑袋里全都是老师，怎么办啦>_<",
-                "（把被子拉到耳朵边，盯着屏幕上那行字，又飞快补了一句）",
+                "闹钟响了三遍，我还是没等到回复，越想越急啊>_<",
+                "（把手机扣在桌面上，盯着屏幕上的时间，又补了一句）",
             ],
         )
         self._assert_order_preserved(text, segments)
 
     def test_tone_symbol_at_sentence_tail_before_action(self):
         """语气符号结尾同样按动作段独立。"""
-        text = "嗯～（思考）这样啊。"
+        text = "好～（想了想）就这样。"
         segments = local_fallback_split(text, 12, 180)
-        self.assertEqual(segments, ["嗯～", "（思考）", "这样啊。"])
+        self.assertEqual(segments, ["好～", "（想了想）", "就这样。"])
         self._assert_order_preserved(text, segments)
 
     def test_pause_at_sentence_tail_still_merges_action(self):
         """停顿符结尾仍按句中插入语回并，不改既有行为。"""
-        text = "……（叹气）算了。"
+        text = "……（停顿）随后继续。"
         segments = local_fallback_split(text, 12, 180)
-        self.assertEqual(segments, ["……（叹气）算了。"])
+        self.assertEqual(segments, ["……（停顿）随后继续。"])
         self._assert_order_preserved(text, segments)
 
     def test_digits_before_bracket_still_merge(self):
@@ -350,6 +351,174 @@ class TestKaomojiBeforeActionBracket(unittest.TestCase):
         segments = local_fallback_split(text, 12, 180)
         self.assertEqual(segments, ["1<2（例子）这样。"])
         self._assert_order_preserved(text, segments)
+
+
+class TestSentenceBoundaryBeforeActionBracket(unittest.TestCase):
+    """句末标点后挂着闭合引号时，括号仍是独立动作段。"""
+
+    def test_curly_quote_after_sentence_end(self):
+        text = "她说“先这样。”（点头）然后挂断。"
+        self.assertEqual(
+            local_fallback_split(text, 12, 180),
+            ["她说“先这样。”", "（点头）", "然后挂断。"],
+        )
+
+    def test_japanese_quote_after_sentence_end(self):
+        text = "她说「先这样。」（抬手）随后离开。"
+        self.assertEqual(
+            local_fallback_split(text, 12, 180),
+            ["她说「先这样。」", "（抬手）", "随后离开。"],
+        )
+
+    def test_bracket_still_merges_inside_sentence(self):
+        """引号不改变句中插入语的既有回并行为。"""
+        text = "他说的（补充）内容很重要。"
+        self.assertEqual(local_fallback_split(text, 12, 180), [text])
+
+    def test_ascii_period_before_action_bracket(self):
+        """英文单句点与中文句号同权：其后的括号独立成段。"""
+        self.assertEqual(
+            local_fallback_split("Hello.（笑）World.", 12, 180),
+            ["Hello.", "（笑）", "World."],
+        )
+
+    def test_ascii_ellipsis_before_action_bracket_merges(self):
+        """连续点号是省略号停顿，仍按句中插入语回并。"""
+        text = "清单...（想了一会儿）可以。"
+        self.assertEqual(local_fallback_split(text, 12, 180), [text])
+
+    def test_ascii_square_bracket_note_before_action(self):
+        """``[注。]`` 的收尾 ``]`` 也要跳过，动作段照常独立。"""
+        self.assertEqual(
+            local_fallback_split("备注[见注。]（动作）其余照旧。", 12, 180),
+            ["备注[见注。]", "（动作）", "其余照旧。"],
+        )
+
+
+class TestForceSplitAtomsAndCuts(unittest.TestCase):
+    """强制切分不破坏行内原子；漏写括号不吞掉标点切点。"""
+
+    def test_force_split_skips_inline_atoms(self):
+        from segmentation.packing import apply_force_split_to_segments
+
+        for text in (
+            "代码 `a|b` 结束。",
+            "看 [x](http://e.com/a|b) 结束。",
+            "主页 https://e.com/a|b 可以看。",
+        ):
+            self.assertEqual(
+                apply_force_split_to_segments([text], ["|"]),
+                [text],
+            )
+        self.assertEqual(
+            apply_force_split_to_segments(["a|b `c|d`"], ["|"]),
+            ["a|", "b `c|d`"],
+        )
+
+    def test_unclosed_bracket_does_not_hide_priority_cuts(self):
+        from segmentation.boundary import _tier_cut_positions
+        from segmentation.packing import pack_segments_to_target
+
+        text = "会议太长(，我想休息，明天再聊吧。"
+        # 漏写的「(」不应让逗号切点全部消失。
+        self.assertEqual(_tier_cut_positions(text, 3), [6, 11])
+        self.assertEqual(
+            pack_segments_to_target([text], 8, max_chars_per_segment=8),
+            ["会议太长(，", "我想休息，", "明天再聊吧。"],
+        )
+
+
+class TestListNumberAndSymbolPreservation(unittest.TestCase):
+    """编号与纯符号段：只切不改，不重复、不丢弃。"""
+
+    @staticmethod
+    def _norm(text: str) -> str:
+        return "".join(text.split())
+
+    def test_list_number_at_clause_start_not_duplicated(self):
+        """句子切分时行首编号留在自己的条目里，不能被复制成「11.」。"""
+        from segmentation.boundary import _sentence_split_line
+
+        self.assertEqual(
+            _sentence_split_line("1. 先备份。2. 再升级。"),
+            ["1. 先备份。", "2. 再升级。"],
+        )
+
+    def test_list_number_after_sentence_end_not_duplicated(self):
+        """同一行内句号后紧跟的编号同样不得重复。"""
+        text = "结论。1. 先备份 2. 再升级。"
+        segments = local_fallback_split(text, 12, 180)
+        joined = self._norm("".join(segments))
+        self.assertEqual(joined, self._norm(text))
+        self.assertNotIn("11.", joined)
+
+    def test_symbol_only_part_not_dropped(self):
+        """``***``/``___`` 这类纯符号片段不能消失，也不能破坏动作段原子性。"""
+        cases = (
+            ("***（点头）你好。", ["***（点头）", "你好。"]),
+            ("___（点头）你好。", ["___（点头）", "你好。"]),
+        )
+        for text, expected in cases:
+            segments = local_fallback_split(text, 12, 180)
+            self.assertEqual(self._norm("".join(segments)), self._norm(text))
+            self.assertEqual(segments, expected)
+
+    def test_korean_laughter_before_action_bracket(self):
+        """谚文字母颜文字（ㅋㅋ）同样让动作段独立。"""
+        text = "ㅋㅋ（笑）收到。"
+        segments = local_fallback_split(text, 12, 180)
+        self.assertEqual(segments, ["ㅋㅋ", "（笑）", "收到。"])
+
+
+class TestModelOutputBracketIntegrity(unittest.TestCase):
+    """模型输出路径：全角括号的原子性与强制符号片段归属。"""
+
+    def test_model_split_inside_fullwidth_bracket_is_repaired(self):
+        """模型把 orz（沮丧）从括号中间切开时，重建仍保持括号完整。"""
+        text = "orz（沮丧）怎么办。"
+        segments = parse_segments_from_model_output(
+            "orz（沮 | 丧）怎么办。",
+            fallback_text=text,
+            max_segments=12,
+            max_chars_per_segment=180,
+        )
+        self.assertEqual(segments, ["orz", "（沮丧）", "怎么办。"])
+
+    def test_model_split_inside_fullwidth_square_bracket_is_repaired(self):
+        """句中插入语仍回并前文，但括号本身不得被切开。"""
+        text = "ab【重点】说明。"
+        segments = parse_segments_from_model_output(
+            "ab【重 | 点】说明。",
+            fallback_text=text,
+            max_segments=12,
+            max_chars_per_segment=180,
+        )
+        norm = TestListNumberAndSymbolPreservation._norm
+        self.assertEqual(norm("".join(segments)), norm(text))
+        self.assertTrue(any("【重点】" in seg for seg in segments))
+
+    def test_leading_pure_punct_merges_in_model_path(self):
+        """模型路径的段首纯标点同样并入下一段，不单独成条。"""
+        text = "？！（她笑了）我也是。"
+        segments = parse_segments_from_model_output(
+            "？！ | （她笑了） | 我也是。",
+            fallback_text=text,
+            max_segments=12,
+            max_chars_per_segment=180,
+        )
+        self.assertEqual(segments, ["？！（她笑了）", "我也是。"])
+
+    def test_force_symbol_only_piece_attaches_in_model_path(self):
+        """模型路径的纯强制符号片段挂回前一段末尾，不单独成条。"""
+        text = "（动作）|后半。"
+        segments = parse_segments_from_model_output(
+            text,
+            fallback_text=text,
+            max_segments=12,
+            max_chars_per_segment=180,
+            force_split_symbols=["|"],
+        )
+        self.assertEqual(segments, ["（动作）|", "后半。"])
 
 
 class TestCqCodeAtoms(unittest.TestCase):

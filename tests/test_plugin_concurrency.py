@@ -452,5 +452,38 @@ class TestFastForwardToggle(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(pending.fast_forward_delay_seconds, 0.4)
 
 
+class TestFastForwardRegistrationRace(unittest.IsolatedAsyncioTestCase):
+    """新消息的 on_llm_response 早于旧回复登记补发时，旧队列也要加速。"""
+
+    TEXT = "第一句内容比较长，用于测试新消息先到的场景。" * 8
+
+    async def _decorate_and_get_pending(self, plugin, event):
+        await plugin.on_decorating_result(event)
+        pending_id = event.extra["smart_segmentation_pending_id"]
+        return plugin._pending_follow_ups[pending_id]
+
+    async def test_newer_message_marks_existing_reply_fast_forward(self):
+        plugin = SmartSegmentationPlugin(FakeContext(), {"enabled": True})
+        event_a = FakeEvent("s", FakeResult(self.TEXT))
+        event_b = FakeEvent("s", FakeResult(self.TEXT))
+
+        await plugin.on_llm_response(event_a, FakeLLMResponse(self.TEXT))
+        await plugin.on_llm_response(event_b, FakeLLMResponse(self.TEXT))
+        pending = await self._decorate_and_get_pending(plugin, event_a)
+
+        self.assertTrue(pending.fast_forward)
+        await plugin.terminate()
+
+    async def test_single_message_does_not_fast_forward(self):
+        plugin = SmartSegmentationPlugin(FakeContext(), {"enabled": True})
+        event = FakeEvent("s", FakeResult(self.TEXT))
+
+        await plugin.on_llm_response(event, FakeLLMResponse(self.TEXT))
+        pending = await self._decorate_and_get_pending(plugin, event)
+
+        self.assertFalse(pending.fast_forward)
+        await plugin.terminate()
+
+
 if __name__ == "__main__":
     unittest.main()

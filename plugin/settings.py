@@ -109,7 +109,15 @@ class SettingsMixin:
         legacy_use_local = self._as_bool(
             self._get_config_value("use_local_only", True), True
         )
-        segmenter = "local" if legacy_use_local else "llm"
+        explicit_segmenter = str(
+            self._get_config_value("segmenter", "") or ""
+        ).strip()
+        if legacy_use_local and explicit_segmenter == "llm":
+            # 旧键仍是默认 true、新键已被显式改成 llm：尊重用户选择。
+            # 否则首次迁移会把 WebUI 的修改静默写回 local。
+            segmenter = "llm"
+        else:
+            segmenter = "local" if legacy_use_local else "llm"
         try:
             self.config["segmenter"] = segmenter
             self.config["segmenter_migrated"] = True
@@ -315,6 +323,9 @@ class SettingsMixin:
         """将输入值安全转换为布尔值，兼容字符串真伪表达。"""
         if isinstance(value, bool):
             return value
+        # JSON 手写配置常见 0/1；bool 是 int 子类，必须在上面的分支之后判断。
+        if isinstance(value, (int, float)):
+            return bool(value)
         if isinstance(value, str):
             normalized = value.strip().lower()
             if normalized in {"1", "true", "yes", "on"}:

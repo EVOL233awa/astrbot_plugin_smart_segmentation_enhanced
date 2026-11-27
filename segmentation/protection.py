@@ -8,7 +8,9 @@ import re
 _MD_HEADING_RE = re.compile(r"^#{1,6}\s")
 
 
-_MD_HR_RE = re.compile(r"^[-*_]{3,}\s*$")
+# CommonMark 分隔线允许符号间夹空格（`* * *`）；缺 mdit 走正则时也必须认出来，
+# 否则会被当成列表项只剥掉行首标记，留下 `* *`。
+_MD_HR_RE = re.compile(r"^(?:[-*_]\s*){3,}$")
 
 
 # 兼容有无首尾竖线的 GFM 表格行；单独 a|b 不算表格行。
@@ -96,13 +98,6 @@ def _consume_json_block(lines: list[str], start: int) -> tuple[list[str] | None,
                 return block, index + 1
             return None, start
     return None, start
-
-
-def _is_closing_fence(line: str, fence_char: str = "") -> bool:
-    match = _FENCE_CLOSE_RE.match(line)
-    if match is None:
-        return False
-    return not fence_char or match.group(1)[0] == fence_char
 
 
 def _fence_is_nested_container(info: str) -> bool:

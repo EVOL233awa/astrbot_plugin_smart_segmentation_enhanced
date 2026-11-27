@@ -198,6 +198,13 @@ def is_action_only_text(text: str) -> bool:
     写法，独立成条会切出只有一对括号的碎气泡。
     """
     stripped = str(text or "").strip()
+    # Markdown 强调/分隔符残留（``***（点头）``、``---（叹气）``）不是正文，
+    # 允许它们挂在动作括号前，动作段仍保持原子性。
+    lead = 0
+    while lead < len(stripped) and stripped[lead] in "*_-":
+        lead += 1
+    if lead:
+        stripped = stripped[lead:].lstrip()
     if len(stripped) < 2:
         return False
 

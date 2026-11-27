@@ -17,6 +17,7 @@ from astrbot.api.provider import LLMResponse
 from astrbot.api.star import Context, Star
 
 from .plugin import (
+    _INBOUND_SEQ_EXTRA_KEY,
     _PENDING_EXTRA_KEY,
     _PENDING_FOLLOW_UP_TTL_SECONDS,
     _PENDING_REAPER_INTERVAL_SECONDS,
@@ -124,6 +125,10 @@ class SmartSegmentationPlugin(
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._lock_reaper_task: asyncio.Task[Any] | None = None
         self._smart_delay_warned: set[str] = set()
+        # 每个会话最近一次 on_llm_response 的入站序号：回复登记补发时
+        # 若已有更新消息，旧尾巴立即转快速发送，避免新回复等旧队列。
+        self._inbound_seq = 0
+        self._session_latest_seq: dict[str, int] = {}
 
     @filter.on_llm_response()
     async def on_llm_response(
@@ -139,6 +144,9 @@ class SmartSegmentationPlugin(
         # 同会话来了新消息：上一条回复的剩余分段转为快速发送，
         # 新回复不必等旧尾巴按原节奏排完（内容不丢弃）。
         if settings.fast_forward_enabled:
+            self._inbound_seq += 1
+            self._session_latest_seq[event.unified_msg_origin] = self._inbound_seq
+            event.set_extra(_INBOUND_SEQ_EXTRA_KEY, self._inbound_seq)
             self._fast_forward_follow_ups(event.unified_msg_origin)
 
         if not self._platform_supports_follow_up(event):
@@ -287,11 +295,26 @@ class SmartSegmentationPlugin(
                 return
 
             result.chain = [Plain(first_segment)]
+            # 本回复的 on_llm_response 之后若已有更新消息，旧尾巴直接
+            # 转快速发送：此时新消息的 fast-forward 扫描还没看到这条
+            # pending（登记顺序相反），不补这一手就会让新回复等旧队列。
+            own_seq = event.get_extra(_INBOUND_SEQ_EXTRA_KEY, 0)
+            try:
+                own_seq = int(own_seq)
+            except (TypeError, ValueError):
+                own_seq = 0
+            latest_seq = self._session_latest_seq.get(
+                event.unified_msg_origin, 0
+            )
             pending_id = self._register_pending_follow_up(
                 session=event.unified_msg_origin,
                 segments=follow_up_segments,
                 settings=settings,
                 first_segment=first_segment,
+                fast_forward=(
+                    settings.fast_forward_enabled
+                    and 0 < own_seq < latest_seq
+                ),
             )
             event.set_extra(_PENDING_EXTRA_KEY, pending_id)
             pending = self._pending_follow_ups.get(pending_id)
@@ -341,6 +364,7 @@ class SmartSegmentationPlugin(
         self._pending_follow_ups.clear()
         self._running_follow_ups.clear()
         self._session_locks.clear()
+        self._session_latest_seq.clear()
 
     @staticmethod
     def _extract_response_plain_text(response: LLMResponse) -> str:

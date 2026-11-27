@@ -99,14 +99,13 @@ def stabilize_segment_lengths(
             continue
         stabilized.extend(_split_overlong_in_run(parts, max_chars, pause_min_chars))
     stabilized = _merge_to_global_max(stabilized, max_segs, max_chars)
-    stabilized = _force_merge_to_max_segments(stabilized, max_segs, max_chars)
+    stabilized = _force_merge_to_max_segments(stabilized, max_segs)
     return stabilized
 
 
 def expand_under_split_natural_segments(
     segments: list[str],
     *,
-    max_segments: int | str = 0,
     pause_min_chars: int = _PAUSE_BREAK_MIN_CHARS,
 ) -> list[str]:
     """把模型漏切的自然语言长段按本地句末边界补齐，避免多个句子粘连。"""
@@ -217,7 +216,12 @@ def local_fallback_split(
     packed = attach_symbol_only_pieces(packed, force_split_symbols)
     if max_segments > 0:
         packed = _merge_to_global_max(packed, max_segments, max_chars)
-        packed = _force_merge_to_max_segments(packed, max_segments, max_chars)
+        packed = _force_merge_to_max_segments(packed, max_segments)
     if merge_short_tail:
-        packed = merge_short_tail_segment(packed, max_chars, short_tail_threshold)
+        packed = merge_short_tail_segment(
+            packed,
+            max_chars,
+            short_tail_threshold,
+            force_split_symbols=force_split_symbols,
+        )
     return packed

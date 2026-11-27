@@ -23,3 +23,5 @@ _SESSION_LOCK_TIMEOUT_SECONDS = 60.0
 _FOLLOW_UP_SEND_TIMEOUT_SECONDS = 60.0
 _PENDING_EXTRA_KEY = "smart_segmentation_pending_id"
 _PREPARED_EXTRA_KEY = "smart_segmentation_prepared_segments"
+# 本事件对应的入站序号：用于判断回复登记补发时是否已有更新的消息到达。
+_INBOUND_SEQ_EXTRA_KEY = "smart_segmentation_inbound_seq"

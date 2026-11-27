@@ -12,7 +12,7 @@ from .protection import _INLINE_CODE_RE, _LINK_IMAGE_RE
 _HARD_SENTENCE_END_CHARS = frozenset("！？!?…")
 
 # 段尾允许出现在终止标点之后的收尾符号，判断句末边界时向后跳过。
-_CLOSING_TRAIL_CHARS = frozenset('"\')》】」』＞>】"\'）)')
+_CLOSING_TRAIL_CHARS = frozenset("\"')]》】」』＞>）”)’")
 
 # 成对引号：引号内部的句末标点不产生切点，避免长引语被拦腰切断。
 # 只在后方确实存在闭合引号时才进入引号深度，孤立引号按普通字符处理。
@@ -45,6 +45,28 @@ def _ends_at_hard_sentence(text: str) -> bool:
 _SENTENCE_BOUNDARY_CHARS = frozenset("。！？!?~…")
 
 
+def _ends_at_sentence_boundary(text: str) -> bool:
+    """结尾是否落在句读标点上（跳过引号、括号等收尾符）。
+
+    句末标点后面常挂着闭合引号或括号（「他说“走吧。”」），判断括号动作
+    是否独立时必须跳过这些收尾符，否则动作段会被当成句中插入语。
+    单个 ASCII 点号是英文句末；连续点号（``...``）是省略号停顿，
+    与 ``……`` 一样按句中停顿回并。
+    """
+    stripped = text.rstrip()
+    index = len(stripped) - 1
+    while index >= 0 and stripped[index] in _CLOSING_TRAIL_CHARS:
+        index -= 1
+    if index < 0:
+        return False
+    char = stripped[index]
+    if char in _SENTENCE_BOUNDARY_CHARS:
+        return True
+    if char == ".":
+        return index > 0 and stripped[index - 1] != "."
+    return False
+
+
 # 颜文字/语气符号的特征字符：出现在句尾时，后面的括号是动作而非句中
 # 插入语（`怎么办啦>_<（把被子…）`），不能并进前句。
 # 停顿符（省略号、破折号）不在此列——`……（叹气）` 仍是同一句话的延续。
@@ -60,10 +82,12 @@ def _ends_with_kaomoji(text: str) -> bool:
     stripped = text.rstrip()
     for index in range(len(stripped) - 1, -1, -1):
         char = stripped[index]
-        if char.isalnum():
-            return False
+        # 先查特征字符集再查字母数字：ㅋ/ㅠ 这类谚文字母本身就是颜文字，
+        # 会被 isalnum() 提前拦下，顺序反了它们永远不命中。
         if char in _KAOMOJI_TAIL_CHARS:
             return True
+        if char.isalnum():
+            return False
     return False
 
 
@@ -188,7 +212,10 @@ def _force_split_by_symbols(text: str, symbols: list[str] | None) -> list[str]:
     if not keys:
         return [text]
 
-    norm_text, mapping = _nfkc_index_map(text)
+    # 行内代码、链接与裸链接先掩码：符号落在这些原子内部时不切分。
+    masked_text, atoms = _mask_inline_atoms(text)
+    norm_text, norm_to_masked = _nfkc_index_map(masked_text)
+    masked_to_orig = _masked_position_map(masked_text, atoms)
     hits: list[tuple[int, int]] = []
     for key in keys:
         # 标点类符号（！、？、……、逗号等）命中后吸收整个标点簇与收尾引号，
@@ -215,8 +242,8 @@ def _force_split_by_symbols(text: str, symbols: list[str] | None) -> list[str]:
     pieces: list[str] = []
     cursor = 0
     for start, end in hits:
-        orig_start = mapping[start]
-        orig_end = mapping[end - 1] + 1
+        orig_start = masked_to_orig[norm_to_masked[start]]
+        orig_end = masked_to_orig[norm_to_masked[end - 1]] + 1
         if orig_start < cursor:
             continue
         piece = text[cursor:orig_end]
@@ -283,7 +310,14 @@ def _tier_cut_positions(text: str, tier: int) -> list[int]:
             index += 1
             continue
         if char in "（(【[":
-            depth += 1
+            # 先确认后方存在闭合括号：一个漏写的「(」不应让整段失去所有
+            # 标点切点（与 _sentence_split_line 的处理一致）。
+            close_bracket = _BRACKET_CLOSE.get(char)
+            if (
+                close_bracket is not None
+                and masked.find(close_bracket, index + 1) != -1
+            ):
+                depth += 1
             index += 1
             continue
         if char in "）)】]":
@@ -475,8 +509,10 @@ def _sentence_split_line(
                 )
                 if number_match is not None:
                     # 编号前的空白留在上一段末尾：打包合并时仍能还原
-                    # 「设置 2.」里的原始空格。
-                    head = clause[: number_match.start() + 1]
+                    # 「设置 2.」里的原始空格。这里必须用第 1 组的起点：
+                    # 行首编号时正则的 ^ 是零宽匹配，start()+1 会把数字
+                    # 本身留在 head 里，导致「1.」被复制成「11.」。
+                    head = clause[: number_match.start(1)]
                     if head.strip():
                         parts.append(head)
                         current = [number_match.group(1) + "."]
@@ -554,8 +590,6 @@ def _mask_inline_atoms(text: str) -> tuple[str, list[str]]:
         while url and url[-1] in ".,;:!?":
             trail = url[-1] + trail
             url = url[:-1]
-        if not url:
-            return match.group(0)
         atoms.append(url)
         return f"\x00A{len(atoms) - 1}\x00" + trail
 
@@ -594,7 +628,7 @@ def _split_plain_text(
             and part_head
             and part_head in "（(【["
             and expanded[-1].rstrip()
-            and expanded[-1].rstrip()[-1] not in _SENTENCE_BOUNDARY_CHARS
+            and not _ends_at_sentence_boundary(expanded[-1])
             and not is_action_only_text(expanded[-1])
             # 前一段只是颜文字/纯标点时不回并：否则「✨>_<」会把后面的
             # 动作括号吸进来，动作段随之失去原子性、整条不再分段。
@@ -677,7 +711,7 @@ def split_text_at_brackets(text: str) -> list[str]:
         for open_bracket, close_bracket in BRACKET_PAIRS:
             if char == open_bracket:
                 # 函数调用/下标避让只对半角括号成立：`split()`、`arr[0]`
-                # 不切；全角括号（`qwq（难过）`、`注意【重点】`）不是代码语法，
+                # 不切；全角括号（`orz（沮丧）`、`注意【重点】`）不是代码语法，
                 # 前接字母时仍按动作段独立。
                 if (
                     open_bracket in "(["
@@ -748,11 +782,27 @@ def split_segments_at_bracket_boundaries(
     result: list[str] = []
     for segment in segments:
         masked, atoms = _mask_inline_atoms(segment)
+        # 纯符号分隔行（``***``/``___``/``---``）不单独成条，但也不能
+        # 丢弃：作为前缀挂到同一段内下一段开头，保持原文顺序与内容。
+        pending_prefix = ""
         for part in split_text_at_brackets(masked):
             stripped_part = part.strip()
-            if stripped_part and not re.match(r"^[_\-\*\s]{3,}$", stripped_part):
-                result.append(_restore_inline_atoms(stripped_part, atoms))
-                
+            if not stripped_part:
+                continue
+            if re.match(r"^[_\-\*\s]{3,}$", stripped_part):
+                pending_prefix += stripped_part
+                continue
+            result.append(
+                _restore_inline_atoms(pending_prefix + stripped_part, atoms)
+            )
+            pending_prefix = ""
+        if pending_prefix:
+            restored_prefix = _restore_inline_atoms(pending_prefix, atoms)
+            if result:
+                result[-1] += restored_prefix
+            else:
+                result.append(restored_prefix)
+
     if not result:
         return result
         
@@ -817,9 +867,16 @@ def _top_level_bracket_spans(text: str) -> list[tuple[int, int]]:
         matched_pair: tuple[str, str] | None = None
         for open_bracket, close_bracket in BRACKET_PAIRS:
             if char == open_bracket:
-                if index > 0 and (
-                    is_ascii_alnum(masked_text[index - 1])
-                    or masked_text[index - 1] in "._"
+                # 函数调用/下标避让只对半角括号成立，与
+                # split_text_at_brackets 保持一致：全角括号前接字母
+                # （`orz（沮丧）`、`ab【重点】`）仍是动作段。
+                if (
+                    open_bracket in "(["
+                    and index > 0
+                    and (
+                        is_ascii_alnum(masked_text[index - 1])
+                        or masked_text[index - 1] in "._"
+                    )
                 ):
                     break
                 matched_pair = (open_bracket, close_bracket)

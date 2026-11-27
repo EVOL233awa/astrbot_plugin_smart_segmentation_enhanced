@@ -6,11 +6,11 @@ import json
 import re
 from typing import Any
 
-from .core import _LEADING_PUNCTUATION_RE, _SEGMENT_LEADING_PUNCT_CHARS, _as_nonneg_int, is_action_only_text, is_kaomoji_or_pure_punct, is_leading_punctuation, normalize_content_key, normalize_segments, strip_thinking_content
+from .core import _LEADING_PUNCTUATION_RE, _SEGMENT_LEADING_PUNCT_CHARS, _as_nonneg_int, is_action_only_text, is_kaomoji_or_pure_punct, is_leading_punctuation, is_pure_sentence_punct, normalize_content_key, normalize_segments, strip_thinking_content
 from .boundary import (
+    _ends_at_sentence_boundary,
     _LEFT_BOUNDARY_CHARS,
     _PAUSE_BREAK_MIN_CHARS,
-    _SENTENCE_BOUNDARY_CHARS,
     _top_level_bracket_spans,
     split_segments_at_bracket_boundaries,
 )
@@ -18,6 +18,7 @@ from .local_split import expand_under_split_natural_segments, local_fallback_spl
 from .packing import (
     apply_force_split_to_segments,
     apply_no_split_boundaries,
+    attach_symbol_only_pieces,
     merge_short_tail_segment,
 )
 
@@ -233,8 +234,8 @@ def reconstruct_segments_from_model_output(
         # 句中括号（如"取件码（3-2-1874）还是"）不是段边界，避免原句被拦腰切断；
         # 位于文本开头或句末标点之后的括号才允许独立成段。
         if span_start > 0:
-            prev_text = original[:span_start].rstrip()
-            if prev_text and prev_text[-1] not in _SENTENCE_BOUNDARY_CHARS:
+            prev_text = original[:span_start]
+            if prev_text.strip() and not _ends_at_sentence_boundary(prev_text):
                 continue
         bounds.add(span_start)
         bounds.add(span_end)
@@ -392,7 +393,6 @@ def parse_segments_from_model_output(
             )
         normalized = expand_under_split_natural_segments(
             reconstructed,
-            max_segments=0,
             pause_min_chars=pause_min_chars,
         )
 
@@ -434,6 +434,11 @@ def parse_segments_from_model_output(
             final_merged[-1] += pending_leading
         else:
             final_merged.append(pending_leading)
+    # 首段只有句读标点时并到紧跟其后的段开头（与本地路径一致），
+    # 不单独发一条符号气泡；只并入相邻段，绝不跳过以避免重排。
+    if len(final_merged) >= 2 and is_pure_sentence_punct(final_merged[0]):
+        final_merged[1] = final_merged[0] + final_merged[1]
+        del final_merged[0]
 
     # §5.4：重建边界后紧跟保护词的软约束过滤，先于强制再切分执行，
     # 保证强制切点（更高优先级）不会被边界过滤合回。
@@ -444,6 +449,8 @@ def parse_segments_from_model_output(
     )
     # §5.5：对非受保护片段按强制符号做一次确定性再切分（仍只调用一次 LLM）。
     final_merged = apply_force_split_to_segments(final_merged, force_split_symbols)
+    # 只含强制符号的片段挂回前一段末尾，与本地路径语义一致。
+    final_merged = attach_symbol_only_pieces(final_merged, force_split_symbols)
 
     # 段数硬上限无条件兜底：max_chars=0 时 stabilize 只做段数合并，
     # 不做超长拆分，保证 max_segments 在任何参数组合下都生效。
@@ -458,6 +465,7 @@ def parse_segments_from_model_output(
             final_merged,
             _as_nonneg_int(max_chars_per_segment),
             short_tail_threshold,
+            force_split_symbols=force_split_symbols,
         )
 
     return final_merged

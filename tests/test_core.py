@@ -87,11 +87,11 @@ class TestSegmentationKeepsSourceOrder(unittest.TestCase):
         from segmentation import local_fallback_split
 
         cases = [
-            "✨>_<（点头）你好呀。",
-            "～（叹气）算了。",
-            "qwq（难过）怎么办。",
-            "（点头）✨>_<你好呀。",
-            "！？（她笑了）我也是。",
+            "✨>_<（点头）收到啦。",
+            "～（想了想）就这样。",
+            "orz（沮丧）怎么办。",
+            "（点头）✨>_<收到啦。",
+            "！？（他点头）其余照旧。",
             "她说完了。（）然后走了。",
             "她笑了（点头）。好的。",
             "今天真开心。（笑）✨>_<",
