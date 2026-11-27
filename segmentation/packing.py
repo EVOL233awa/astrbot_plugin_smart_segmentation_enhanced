@@ -11,10 +11,12 @@ from .protection import has_protected_block, is_markdown_document
 from .boundary import (
     _ends_at_hard_sentence,
     _force_split_by_symbols,
+    _mask_inline_atoms,
     _MIN_FRAGMENT_CHARS,
     _normalize_cut_words,
     _no_split_guard,
     _pick_priority_cut,
+    _restore_inline_atoms,
 )
 
 
@@ -94,6 +96,8 @@ def _merge_to_global_max(
                 or is_action_only_text(right)
                 or _is_unsplittable_segment(left)
                 or _is_unsplittable_segment(right)
+                or has_protected_block(left)
+                or has_protected_block(right)
             ):
                 continue
             merged = _join_adjacent(left, right)
@@ -282,7 +286,8 @@ def pack_segments_to_target(
                 if _has_overlong_ordinary_segment(forced, max_chars):
                     logger.warning(
                         "文本长度超过 max_segments * max_chars_per_segment，"
-                        "无法同时满足硬段数与硬单条长度；已优先避免超长尾段"
+                        "无法同时满足段数上限与单条长度上限；已优先压缩段数，"
+                        "允许单条超过 max_chars_per_segment"
                     )
                 packed = forced
             else:
@@ -546,6 +551,21 @@ def apply_force_split_to_segments(
     return result
 
 
+def force_split_outside_inline_atoms(
+    segments: list[str],
+    symbols: list[str] | None,
+) -> list[str]:
+    """按强制符号切分，行内代码/链接/URL 内的同名符号不参与切分。"""
+    if not symbols:
+        return list(segments)
+    result: list[str] = []
+    for segment in segments:
+        masked, atoms = _mask_inline_atoms(segment)
+        for piece in apply_force_split_to_segments([masked], symbols):
+            result.append(_restore_inline_atoms(piece, atoms))
+    return result
+
+
 def _is_symbol_only_piece(segment: str, symbols: list[str]) -> bool:
     """片段除强制符号外没有别的可见字符（符号可能长于一个字符、全半角等价）。"""
     rest = unicodedata.normalize("NFKC", segment.strip())
@@ -580,16 +600,32 @@ def attach_symbol_only_pieces(
     """把只剩强制符号的片段挂回前一段末尾（§5.5「符号留在前段末尾」）。
 
     打包后再按符号切分时，若某段以符号开头，切分会产出一个只含符号的
-    片段；按既定语义它属于前一条消息的结尾，不能单独成条。
+    片段；按既定语义它属于前一条消息的结尾，不能单独成条。前一段是受
+    保护块时改与下一段合并：拼到闭合围栏后会把围栏行破坏掉。
     """
     if not symbols:
         return list(segments)
     attached: list[str] = []
-    for segment in segments:
+    index = 0
+    total = len(segments)
+    while index < total:
+        segment = segments[index]
         if attached and _is_symbol_only_piece(segment, symbols):
-            attached[-1] = attached[-1] + segment
-            continue
+            if not has_protected_block(attached[-1]):
+                attached[-1] = attached[-1] + segment
+                index += 1
+                continue
+            next_segment = segments[index + 1] if index + 1 < total else ""
+            if (
+                next_segment
+                and not _is_unsplittable_segment(next_segment)
+                and not has_protected_block(next_segment)
+            ):
+                attached.append(segment + next_segment)
+                index += 2
+                continue
         attached.append(segment)
+        index += 1
     return attached
 
 

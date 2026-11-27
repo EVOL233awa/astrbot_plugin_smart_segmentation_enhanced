@@ -140,6 +140,18 @@
       "heavy"
     ]
   },
+  "strip_thinking_tags": {
+    "type": "bool",
+    "description": "清理正文里的 thinking 推理内容",
+    "hint": "开启后，插件会删除代码块（```）之外的 <thinking>…</thinking> 整段内容，避免推理过程出现在消息里；代码块内和没有闭合的标签保持原样。AstrBot 4.29.0 之前需要开启；4.29.0 及以上宿主会自己处理，可关闭本项。默认开启。",
+    "default": true
+  },
+  "qq_official_follow_up": {
+    "type": "bool",
+    "description": "QQ 官方平台分段补发",
+    "hint": "开启后，QQ 官方（非 webhook）平台也会把首段之外的剩余分段逐条补发。AstrBot 4.20.0 之前开启会导致除首段外的分段全部丢失；4.20.0 及以上可开启。默认关闭，整条发送。",
+    "default": false
+  },
   "temperature": {
     "type": "float",
     "description": "分段模型温度",

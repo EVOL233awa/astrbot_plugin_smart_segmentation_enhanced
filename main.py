@@ -94,10 +94,10 @@ __all__ = [
 ]
 
 
-# 与 AstrBot 内置 segmented_reply 保持一致，在这三类平台不做补发：
-# 微信公众号适配器的 send_by_session 必然抛异常；QQ 官方在缺少 msg_id
-# 时只 warning 跳过（群聊主动推送另有配额与频控）；钉钉主动消息同样受限。
-# 补发失败会让用户只收到首段，因此这些平台整条发出。
+# 补发失败会让用户只收到首段，这些平台无论如何整条发出：微信公众号适配器
+# 的 send_by_session 必然抛异常；QQ 官方 webhook 与钉钉主动消息受 msg_id/
+# 配额限制。QQ 官方（非 webhook）是否补发由 qq_official_follow_up 控制：
+# AstrBot <4.20.0 的适配器直接抛 NotImplementedError，4.20.0 起支持。
 _NO_PROACTIVE_SEND_PLATFORMS = frozenset(
     {"qq_official_webhook", "weixin_official_account", "dingtalk"}
 )
@@ -149,11 +149,14 @@ class SmartSegmentationPlugin(
             event.set_extra(_INBOUND_SEQ_EXTRA_KEY, self._inbound_seq)
             self._fast_forward_follow_ups(event.unified_msg_origin)
 
-        if not self._platform_supports_follow_up(event):
+        if not self._platform_supports_follow_up(event, settings):
             return
 
         text = clean_markdown_by_mode(
-            self._extract_response_plain_text(response),
+            self._extract_response_plain_text(
+                response,
+                remove_thinking=settings.strip_thinking_tags,
+            ),
             settings.markdown_clean_mode,
         )
         if not self._should_segment_text(text, settings):
@@ -221,14 +224,17 @@ class SmartSegmentationPlugin(
         if settings is None:
             return
 
-        if not self._platform_supports_follow_up(event):
+        if not self._platform_supports_follow_up(event, settings):
             return
 
         result = event.get_result()
         if result is None or not self._is_model_text_result(result):
             return
 
-        raw_outbound = self._extract_plain_text_chain(result)
+        raw_outbound = self._extract_plain_text_chain(
+            result,
+            remove_thinking=settings.strip_thinking_tags,
+        )
         if not raw_outbound:
             return
         outbound_text = clean_markdown_by_mode(
@@ -367,8 +373,12 @@ class SmartSegmentationPlugin(
         self._session_latest_seq.clear()
 
     @staticmethod
-    def _extract_response_plain_text(response: LLMResponse) -> str:
-        """从大语言模型响应结构中提取纯文本，自动过滤思考标签。"""
+    def _extract_response_plain_text(
+        response: LLMResponse,
+        *,
+        remove_thinking: bool = True,
+    ) -> str:
+        """从大语言模型响应结构中提取纯文本，可选过滤思考标签。"""
         role = str(getattr(response, "role", "") or "").strip().lower()
         if role and role not in {"assistant", "ai"}:
             return ""
@@ -380,7 +390,7 @@ class SmartSegmentationPlugin(
             return ""
 
         text = str(getattr(response, "completion_text", "") or "")
-        return strip_thinking_content(text)
+        return strip_thinking_content(text, remove_thinking=remove_thinking)
 
     @staticmethod
     def _is_plain_chain(message_chain: MessageChain) -> bool:
@@ -391,12 +401,20 @@ class SmartSegmentationPlugin(
         )
 
     @classmethod
-    def _extract_plain_text_chain(cls, message_chain: MessageChain) -> str:
-        """从消息事件结果中提取并整合干净的纯文本内容。"""
+    def _extract_plain_text_chain(
+        cls,
+        message_chain: MessageChain,
+        *,
+        remove_thinking: bool = True,
+    ) -> str:
+        """从消息事件结果中提取并整合纯文本内容，可选过滤思考标签。"""
         if not cls._is_plain_chain(message_chain):
             return ""
         texts = [component.text for component in message_chain.chain]
-        return strip_thinking_content(" ".join(texts))
+        return strip_thinking_content(
+            " ".join(texts),
+            remove_thinking=remove_thinking,
+        )
 
     @classmethod
     def _is_model_text_result(cls, result: MessageEventResult) -> bool:
@@ -408,14 +426,28 @@ class SmartSegmentationPlugin(
                     return False
             except Exception:
                 return False
+        else:
+            is_llm_result = getattr(result, "is_llm_result", None)
+            if not callable(is_llm_result):
+                return False
+            try:
+                if not is_llm_result():
+                    return False
+            except Exception:
+                return False
         return cls._is_plain_chain(result)
 
     @staticmethod
-    def _platform_supports_follow_up(event: AstrMessageEvent) -> bool:
+    def _platform_supports_follow_up(
+        event: AstrMessageEvent,
+        settings: SegmentationSettings,
+    ) -> bool:
         """判断当前平台能否安全地靠 send_message 追加消息。
 
-        三类平台上补发会失败或受配额限制（用户只收到首段），此时整条
-        发出更符合预期；拿不到平台名时按支持处理。
+        黑名单里的平台补发会失败或受配额限制（用户只收到首段），此时
+        整条发出更符合预期；QQ 官方由配置控制，默认关闭以兼容旧版宿主。
+        拿不到平台名时按支持处理。只使用插件文档公开的
+        ``get_platform_name``，不探测宿主版本或适配器内部结构。
         """
         get_platform_name = getattr(event, "get_platform_name", None)
         if not callable(get_platform_name):
@@ -424,6 +456,8 @@ class SmartSegmentationPlugin(
             name = str(get_platform_name() or "").strip()
         except Exception:
             return True
+        if name == "qq_official":
+            return settings.qq_official_follow_up
         return name not in _NO_PROACTIVE_SEND_PLATFORMS
 
     @staticmethod

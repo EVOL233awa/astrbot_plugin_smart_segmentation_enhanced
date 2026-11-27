@@ -8,21 +8,26 @@ import unicodedata
 from typing import Any
 
 
+# 只删成对标签。未闭合的 <thinking> 若按「延伸到文末」删除，正文里出现
+# 字面量标签时会吞掉其后全部可见内容；推理泄漏由宿主 Provider 层处理
+# （4.29.3 的 openai_source 已把成对推理抽到 reasoning_content）。
 THINKING_TAG_RE = re.compile(
-    r"<thinking>(?:[\s\S]*?)(?:</thinking>|$)",
+    r"<thinking>[\s\S]*?</thinking>",
     flags=re.IGNORECASE,
 )
 
 
-THINKING_BOUNDARY_RE = re.compile(r"</?thinking>", flags=re.IGNORECASE)
+# 只清理孤立的闭标签；未闭合的开标签连正文一起原样保留，与宿主 Provider
+# 行为一致（4.29.3 也只清理文末的闭标签，不删开标签之后的正文）。
+THINKING_BOUNDARY_RE = re.compile(r"</thinking>", flags=re.IGNORECASE)
 
 
 PROTOCOL_ARTIFACTS_RE = re.compile(
     r"("
-    r"<tool_call>[\s\S]*?(?:</tool_call>|$)"
-    r"|<function_call>[\s\S]*?(?:</function_call>|$)"
-    r"|\[Tooltip:[^\]]*(?:\]|$)"
-    r"|\[System:[^\]]*(?:\]|$)"
+    r"<tool_call>[\s\S]*?</tool_call>"
+    r"|<function_call>[\s\S]*?</function_call>"
+    r"|\[Tooltip:[^\]]*\]"
+    r"|\[System:[^\]]*\]"
     r")",
     flags=re.IGNORECASE,
 )
@@ -110,14 +115,71 @@ def is_leading_punctuation(text: str) -> bool:
     return bool(_LEADING_PUNCTUATION_RE.match(stripped))
 
 
-def strip_thinking_content(text: str) -> str:
-    """移除 thinking 标签、Tool Call 伪影，只保留最终可见正文（保留通用代码块）。"""
+_FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+# 闭合围栏只允许行尾空白；带 info string 的行（如 ```python）不是闭合。
+_FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
+
+
+def _split_fenced_text(text: str) -> list[tuple[bool, str]]:
+    """按 Markdown 代码围栏把文本切成「是否围栏内」片段，围栏行与内容原样保留。
+
+    未闭合的围栏视为延续到文末（与 Markdown 渲染一致），因此其内容也不会被清洗。
+    """
+    segments: list[tuple[bool, str]] = []
+    buffer: list[str] = []
+    fence_char = ""
+    fence_length = 0
+    in_fence = False
+
+    for line in text.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        if in_fence:
+            buffer.append(line)
+            match = _FENCE_CLOSE_RE.match(body)
+            if (
+                match
+                and match.group(1)[0] == fence_char
+                and len(match.group(1)) >= fence_length
+            ):
+                segments.append((True, "".join(buffer)))
+                buffer = []
+                in_fence = False
+            continue
+
+        match = _FENCE_OPEN_RE.match(body)
+        if match:
+            if buffer:
+                segments.append((False, "".join(buffer)))
+                buffer = []
+            fence_char = match.group(1)[0]
+            fence_length = len(match.group(1))
+            in_fence = True
+        buffer.append(line)
+
+    if buffer:
+        segments.append((in_fence, "".join(buffer)))
+    return segments
+
+
+def _strip_protocol_outside_fences(chunk: str, remove_thinking: bool) -> str:
+    if remove_thinking:
+        chunk = THINKING_TAG_RE.sub("", chunk)
+        chunk = THINKING_BOUNDARY_RE.sub("", chunk)
+    return PROTOCOL_ARTIFACTS_RE.sub("", chunk)
+
+
+def strip_thinking_content(text: str, *, remove_thinking: bool = True) -> str:
+    """移除 thinking 标签、Tool Call 伪影，只保留最终可见正文（保留通用代码块）。
+
+    ``remove_thinking=False`` 时完全不碰 thinking 标签（含成对块），
+    只清理 Tool Call 等协议伪影。
+    """
     if not text:
         return ""
-    cleaned_text = THINKING_TAG_RE.sub("", str(text))
-    cleaned_text = THINKING_BOUNDARY_RE.sub("", cleaned_text)
-    cleaned_text = PROTOCOL_ARTIFACTS_RE.sub("", cleaned_text)
-    return cleaned_text.strip()
+    return "".join(
+        chunk if in_fence else _strip_protocol_outside_fences(chunk, remove_thinking)
+        for in_fence, chunk in _split_fenced_text(str(text))
+    ).strip()
 
 
 def is_non_natural_language(text: str) -> bool:

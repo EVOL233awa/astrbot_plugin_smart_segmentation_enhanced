@@ -45,7 +45,7 @@ AstrBot 插件：把 LLM 长回复拆成多条更像真人聊天的消息，支�
 - `linear`：延迟随字符数增加。
 - `smart`：按上一段结尾标点增减等待（省略号多等、感叹号后急促），可加随机抖动。
 - 同一会话来了新消息时，上一条回复剩余的分段会快速发出，追问的回复不必等旧消息按原节奏排完；加速间隔可在配置中调整或关闭该行为。
-- 官方 QQ、微信公众号与钉钉平台的主动消息受配额或接口限制，插件在这些平台整条发出，不做分段。
+- 官方 QQ、微信公众号与钉钉平台的主动消息受配额或接口限制，默认整条发出；QQ 官方（非 webhook）在 AstrBot 4.20.0 及以上可开启 `qq_official_follow_up` 分段补发。
 
 ## 架构
 
@@ -128,6 +128,8 @@ flowchart TB
 | 配置项 | 说明 | 默认值 |
 |---|---|---|
 | `enabled` | 启用插件 | `true` |
+| `strip_thinking_tags` | 删除代码块外的 `<thinking>…</thinking>` 整段；4.29.0 之前需要，4.29.0 起可关闭 | `true` |
+| `qq_official_follow_up` | QQ 官方平台是否补发剩余分段；4.20.0 之前开启会丢分段 | `false` |
 | `segmenter` | 发送引擎：`local` / `llm` | `local` |
 | `provider_id` | 分段模型 Provider；留空使用当前会话模型（仅 `llm`） | `""` |
 | `style` | 分段风格：`natural` / `conservative` / `active`（仅 `llm`） | `natural` |
@@ -145,6 +147,7 @@ flowchart TB
 - **风格**：维护与测试主要使用 `natural`；`conservative` / `active` 未做充分回归，建议保持 `natural`。
 - **宿主限制**：当前 AstrBot 的 `_prepare_chat_payload` 会丢弃 `temperature` 与 `max_tokens`，这两个配置暂不生效。可安装配套插件 [astrbot_plugin_astrbot_tweaks](https://github.com/EVOL233awa/astrbot_plugin_astrbot_tweaks)，开启 `llm_kwargs_passthrough` 修复；分段质量对这两个参数不敏感。
 - **模型失败**：`llm` 模式超时后跳过本次分段，直接发送原回复；其他异常自动降级本地切分。
+- **段数与单条长度**：回复总长超过 `max_segments × max_chars_per_segment` 时优先保证段数上限，单条可能超过 `max_chars_per_segment`。
 - **重复分段**：与 AstrBot 内置分段同时开启会重复拆条，建议只保留一个。
 - **测试范围**：主要在本地 Qwen3.5-4B-MTP Q4KXL 环境验证，其他模型/上下文可能有差异。
 

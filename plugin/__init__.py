@@ -21,6 +21,9 @@ _PENDING_REAPER_INTERVAL_SECONDS = 5.0
 # 会话串行锁最长等待与单条补发发送超时：任一环挂死都不能让该会话永久排队。
 _SESSION_LOCK_TIMEOUT_SECONDS = 60.0
 _FOLLOW_UP_SEND_TIMEOUT_SECONDS = 60.0
+# 首段迟迟没发出时，未消费 pending 占着的会话锁在这么久后让给新回复；
+# 队列本身仍保留到硬 TTL，不丢已切好的补发分段。
+_PENDING_LOCK_STALE_SECONDS = 5.0
 _PENDING_EXTRA_KEY = "smart_segmentation_pending_id"
 _PREPARED_EXTRA_KEY = "smart_segmentation_prepared_segments"
 # 本事件对应的入站序号：用于判断回复登记补发时是否已有更新的消息到达。

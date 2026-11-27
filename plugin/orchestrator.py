@@ -5,13 +5,14 @@ main.SmartSegmentationPlugin.__init__ 初始化，本模块仅作类型声明。
 """
 from __future__ import annotations
 
+import unicodedata
+
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.star import Context
 
 from .settings import SegmentationSettings
 from ..segmentation import (
-    apply_force_split_to_segments,
     apply_no_split_boundaries,
     build_anchor_masking,
     build_segmentation_prompt,
@@ -28,7 +29,7 @@ from ..segmentation import (
     split_segments_at_bracket_boundaries,
     stabilize_segment_lengths,
 )
-from ..segmentation.packing import attach_symbol_only_pieces
+from ..segmentation.packing import attach_symbol_only_pieces, force_split_outside_inline_atoms
 
 
 def _mask_force_symbols(
@@ -44,6 +45,13 @@ def _mask_force_symbols(
     if not symbols:
         return []
     return [str(symbol).replace("|", pipe_placeholder) for symbol in symbols]
+
+
+def _pipe_is_force_symbol(symbols: list[str]) -> bool:
+    """强制符号里是否有与 ASCII | 等价的项（NFKC，全角 ｜ 也算）。"""
+    return any(
+        unicodedata.normalize("NFKC", str(symbol)) == "|" for symbol in symbols
+    )
 
 
 class OrchestrationMixin:
@@ -125,7 +133,42 @@ class OrchestrationMixin:
             pause_min_chars=settings.ellipsis_pause_min_chars,
             **options,
         )
-        return restore_pipe_in_segments(segments, pipe_placeholder)
+        restored = restore_pipe_in_segments(segments, pipe_placeholder)
+        # 占位符可能被模型或本地硬切切成残片，整词 replace 之后原文的 | 就丢了。
+        # 数量对不上说明本条还原不完整，直接按原文本地切分，宁可丢分段不丢字符。
+        if sum(segment.count("|") for segment in restored) != text.count("|"):
+            logger.warning(
+                "智能分段管道符占位还原不完整，本条改走本地切分: %s",
+                text[:40],
+            )
+            return local_fallback_split(
+                text,
+                settings.max_segments,
+                settings.max_chars_per_segment,
+                pause_min_chars=settings.ellipsis_pause_min_chars,
+                **self._split_option_kwargs(settings),
+            )
+        # 还原后单独成段的 | 是原文内容，不是分隔符：挂回相邻段，避免一条只有 |
+        # 的气泡（分段的 | 分隔符在解析阶段已被剥掉）。
+        restored = attach_symbol_only_pieces(restored, ["|"])
+        if "|" in text and _pipe_is_force_symbol(settings.force_split_symbols):
+            # 掩码阶段把 | 换成了占位符，解析器内的强制再切分看不到它；
+            # 还原后补做一次，次序与本地路径一致（切分 → 符号段挂回 → 长度约束）。
+            restored = force_split_outside_inline_atoms(restored, ["|"])
+            restored = attach_symbol_only_pieces(restored, ["|"])
+            restored = stabilize_segment_lengths(
+                restored,
+                max_segments=settings.max_segments,
+                max_chars_per_segment=settings.max_chars_per_segment,
+                pause_min_chars=settings.ellipsis_pause_min_chars,
+            )
+            if settings.merge_short_tail:
+                restored = merge_short_tail_segment(
+                    restored,
+                    settings.max_chars_per_segment,
+                    settings.short_tail_threshold,
+                )
+        return restored
 
     @staticmethod
     def _repair_expanded_segments(
@@ -217,10 +260,9 @@ class OrchestrationMixin:
             settings.no_split_around,
             settings.max_chars_per_segment,
         )
-        final = apply_force_split_to_segments(final, settings.force_split_symbols)
+        final = force_split_outside_inline_atoms(final, settings.force_split_symbols)
+        # 与普通/local 路径一致：强制切出的纯符号片段挂回相邻段，避免裸 | 气泡。
         final = attach_symbol_only_pieces(final, settings.force_split_symbols)
-        # 与本地/普通 LLM 路径同序：先落硬上限，再处理短尾，
-        # 避免 stabilize 新切出的短尾逃过合并。
         final = stabilize_segment_lengths(
             final,
             max_segments=settings.max_segments,

@@ -111,6 +111,17 @@ class TestAnchorVerifyAndExpand(unittest.TestCase):
             verify_anchor_integrity(["说明如下：", truncated, "后续说明。"], [self.anchor])
         )
 
+    def test_verify_ignores_same_shaped_foreign_token(self):
+        segments = ["正文提到 ZZSEGFFFF，", self.anchor, "后续说明。"]
+        self.assertTrue(verify_anchor_integrity(segments, self.masking.anchors))
+
+    def test_expand_keeps_same_shaped_foreign_token_as_text(self):
+        expanded = expand_segments_at_anchors(
+            [f"正文 ZZSEGFFFF 保留{self.anchor}"],
+            self.masking.anchor_to_block,
+        )
+        self.assertEqual(expanded[0], "正文 ZZSEGFFFF 保留")
+
     def test_expand_splits_around_anchor(self):
         expanded = expand_segments_at_anchors(
             [f"说明如下：{self.anchor}后续说明。"],

@@ -33,6 +33,33 @@ class PreparedSegments:
     match_key: str = ""
 
 
+def _merge_non_alnum_edges(
+    segments: list[str],
+    outbound_text: str,
+    prepared_text: str,
+) -> list[str] | None:
+    """outbound 只在头/尾多了非字母数字内容时，把差异贴回首/末段。
+
+    内容签名忽略标点与 emoji，所以这类差异会被签名判成「同一文本」；直接
+    返回 prepared 分段会让新增的 emoji/标点从消息里消失。
+    """
+    if not segments or not outbound_text or not prepared_text:
+        return None
+    index = outbound_text.find(prepared_text)
+    if index < 0:
+        return None
+    prefix = outbound_text[:index]
+    suffix = outbound_text[index + len(prepared_text):]
+    if normalize_content_key(prefix) or normalize_content_key(suffix):
+        return None
+    merged = list(segments)
+    if prefix.strip():
+        merged[0] = prefix + merged[0]
+    if suffix.strip():
+        merged[-1] = merged[-1] + suffix
+    return merged
+
+
 class PreparedStoreMixin:
     """预处理分段缓存池：由 main.SmartSegmentationPlugin 组合使用。"""
 
@@ -85,6 +112,14 @@ class PreparedStoreMixin:
 
         if outbound_text == prepared_text:
             return list(prepared_segments)
+
+        merged_edges = _merge_non_alnum_edges(
+            list(prepared_segments),
+            outbound_text,
+            prepared_text,
+        )
+        if merged_edges is not None:
+            return merged_edges
 
         outbound_key = normalize_content_key(outbound_text)
         prepared_key = normalize_content_key(prepared_text)
@@ -156,6 +191,11 @@ class PreparedStoreMixin:
         """对 prepared 之前的插入文本按剩余段数预算本地补切并前置拼接。"""
         if not str(head_text or "").strip():
             return segments
+        if segments and not normalize_content_key(head_text):
+            # 纯符号/emoji 的前导插入跟着首段走，不单独占一条气泡。
+            merged = list(segments)
+            merged[0] = head_text + merged[0]
+            return merged
         head_segments = local_fallback_split(
             head_text,
             self._aligned_split_budget(segments, settings),
@@ -174,6 +214,11 @@ class PreparedStoreMixin:
         """对 prepared 之后的插入文本本地补切并后置拼接。"""
         if not str(tail_text or "").strip():
             return segments
+        if segments and not normalize_content_key(tail_text):
+            # 纯符号/emoji 的尾部插入跟着末段走，不单独占一条气泡。
+            merged = list(segments)
+            merged[-1] = merged[-1] + tail_text
+            return merged
         budget = self._aligned_split_budget(segments, settings)
         tail_segments = local_fallback_split(
             tail_text,
@@ -197,6 +242,7 @@ class PreparedStoreMixin:
         no_split_around: list[str] | None = None,
         merge_short_tail: bool = False,
         short_tail_threshold: int = 2,
+        remove_thinking: bool = True,
     ) -> list[str] | None:
         """从预存库中获取分段结果（精确匹配 -> 顺序贪婪组合自愈 -> 本地高精分段兜底）。"""
         self._prune_expired_prepared_segments()
@@ -220,10 +266,20 @@ class PreparedStoreMixin:
         }
         if session_entries:
             outbound_match_key = normalize_content_key(outbound_text)
+            negative_key: tuple[str, str] | None = None
             for key, entry in session_entries.items():
                 if entry.match_key and entry.match_key == outbound_match_key:
+                    # 同一内容签名下正向条目优先，负向条目（segments 为空）
+                    # 只在没有任何正向条目命中时才生效，避免结果依赖插入顺序。
+                    if not entry.segments:
+                        if negative_key is None:
+                            negative_key = key
+                        continue
                     self._prepared_segments.pop(key, None)
                     return list(entry.segments)
+            if negative_key is not None:
+                self._prepared_segments.pop(negative_key, None)
+                return []
 
             remaining = outbound_match_key
             assembled_segs = []
@@ -299,6 +355,7 @@ class PreparedStoreMixin:
                     no_split_around=list(no_split_around or []),
                     merge_short_tail=merge_short_tail,
                     short_tail_threshold=short_tail_threshold,
+                    strip_thinking_tags=remove_thinking,
                 )
                 segments = list(best_aligned_entry.segments)
                 segments = self._prepend_aligned_parts(
@@ -334,6 +391,7 @@ class PreparedStoreMixin:
                 no_split_around=list(no_split_around or []),
                 merge_short_tail=merge_short_tail,
                 short_tail_threshold=short_tail_threshold,
+                remove_thinking=remove_thinking,
             )
             if local_segs and len(local_segs) > 1:
                 logger.info("智能分段精准哈希/拼合未中，已自动降级启动本地高精切分兜底")

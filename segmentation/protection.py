@@ -53,6 +53,10 @@ _FENCE_MIDLINE_CLOSE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
 _FENCE_LANG_ID_RE = re.compile(r"^[A-Za-z0-9_+\-.#]*$")
 
 
+# 行首引用前缀：> 加可选空白，可重复；引用围栏的闭围栏可能整行丢掉前缀。
+_QUOTE_PREFIX_RE = re.compile(r"^(?:\s*>)+[ \t]*")
+
+
 def _is_json_like_block(text: str) -> bool:
     """Return True only when a balanced bracket block is valid JSON."""
     stripped = text.strip()
@@ -215,6 +219,18 @@ def _consume_quote(lines: list[str], start: int) -> tuple[list[str], int]:
     while index < len(lines) and _MD_QUOTE_RE.match(lines[index].strip()):
         block.append(lines[index])
         index += 1
+    # 引用围栏的闭围栏常丢掉引用前缀（裸 ```），并进同一块才能闭合；留给
+    # 后续块消费会被当成新的开围栏，把引用之后的正文全部吞进代码块。
+    fence = _quote_open_fence(block)
+    if fence is not None and index < len(lines):
+        close = _FENCE_CLOSE_RE.match(lines[index])
+        if (
+            close is not None
+            and close.group(1)[0] == fence[0]
+            and len(close.group(1)) >= fence[1]
+        ):
+            block.append(lines[index])
+            index += 1
     return block, index
 
 
@@ -364,6 +380,56 @@ def _looks_like_language_id(rest: str) -> bool:
     return _FENCE_LANG_ID_RE.match(rest.strip()) is not None
 
 
+def _split_quote_prefix(line: str) -> tuple[str, str]:
+    """拆出引用前缀与引用内容；非引用行前缀为空串。"""
+    match = _QUOTE_PREFIX_RE.match(line)
+    if match is None:
+        return "", line
+    return match.group(0), line[match.end():]
+
+
+def _quoted_fence(line: str) -> tuple[str, int, str] | None:
+    """引用行里的围栏开启标记 -> (围栏字符, 长度, 围栏后文本)。
+
+    引用前缀不参与围栏判定。前缀与围栏之间可以有一段引用正文
+    （> 示例：```python），此时只接受纯语言标识，避免把引用正文里的
+    内联 ``` 当成围栏。
+    """
+    prefix, payload = _split_quote_prefix(line)
+    if not prefix:
+        return None
+    match = _FENCE_RE.search(payload)
+    if match is None:
+        return None
+    before = payload[: match.start()]
+    rest = payload[match.end():]
+    if before.strip():
+        if not _looks_like_language_id(rest):
+            return None
+    elif not _looks_like_fence_info(rest):
+        return None
+    return match.group(1)[0], len(match.group(1)), rest
+
+
+def _quote_open_fence(block: list[str]) -> tuple[str, int] | None:
+    """引用块里仍未闭合围栏的字符与长度；没有则返回 None。"""
+    fence: tuple[str, int] | None = None
+    for line in block:
+        if fence is None:
+            opened = _quoted_fence(line)
+            if opened is not None:
+                fence = opened[0], opened[1]
+            continue
+        close = _FENCE_CLOSE_RE.match(_split_quote_prefix(line)[1])
+        if (
+            close is not None
+            and close.group(1)[0] == fence[0]
+            and len(close.group(1)) >= fence[1]
+        ):
+            fence = None
+    return fence
+
+
 def _normalize_fence_boundaries(lines: list[str]) -> list[str]:
     """把紧贴正文的围栏标记拆成独立行，便于按行识别代码块。
 
@@ -377,6 +443,7 @@ def _normalize_fence_boundaries(lines: list[str]) -> list[str]:
     fence_len = 0
     fence_depth = 1
     fence_nested = False
+    fence_quoted = False
     midline_open = False
     for line in lines:
         if in_fence:
@@ -396,7 +463,9 @@ def _normalize_fence_boundaries(lines: list[str]) -> list[str]:
                     continue
                 result.append(line)
                 continue
-            match = _FENCE_CLOSE_RE.match(line)
+            # 引用围栏的闭围栏可能丢掉引用前缀，按引用内容判定闭合。
+            probe = _split_quote_prefix(line)[1] if fence_quoted else line
+            match = _FENCE_CLOSE_RE.match(probe)
             if (
                 match is not None
                 and match.group(1)[0] == fence_char
@@ -408,15 +477,28 @@ def _normalize_fence_boundaries(lines: list[str]) -> list[str]:
                     continue
                 result.append(line)
                 in_fence = False
+                fence_quoted = False
                 continue
             if fence_nested:
-                stripped = line.lstrip()
+                stripped = probe.lstrip()
                 open_match = _FENCE_RE.match(stripped)
                 if open_match is not None and open_match.group(1)[0] == fence_char:
                     fence_depth += 1
             result.append(line)
             continue
 
+        quoted = _quoted_fence(line)
+        if quoted is not None:
+            # 引用围栏保留整行（拆出引用会破坏渲染），但必须进入围栏状态，
+            # 否则后面的裸闭围栏会被当成新开围栏，吞掉引用之后的正文。
+            result.append(line)
+            in_fence = True
+            midline_open = False
+            fence_char, fence_len, rest = quoted
+            fence_nested = _fence_is_nested_container(rest)
+            fence_quoted = True
+            fence_depth = 1
+            continue
         match = _FENCE_RE.search(line)
         if match is None:
             result.append(line)
@@ -440,6 +522,7 @@ def _normalize_fence_boundaries(lines: list[str]) -> list[str]:
         fence_char = match.group(1)[0]
         fence_len = len(match.group(1))
         fence_nested = _fence_is_nested_container(rest)
+        fence_quoted = False
         fence_depth = 1
     return result
 

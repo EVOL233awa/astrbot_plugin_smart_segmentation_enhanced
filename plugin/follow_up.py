@@ -21,10 +21,16 @@ from astrbot.api.star import Context
 from . import (
     _FOLLOW_UP_SEND_TIMEOUT_SECONDS,
     _PENDING_FOLLOW_UP_TTL_SECONDS,
+    _PENDING_LOCK_STALE_SECONDS,
     _PENDING_REAPER_INTERVAL_SECONDS,
 )
 from .settings import SegmentationSettings
 from ..segmentation import calculate_send_delay
+
+# 首段由宿主在 on_decorating_result 全部返回后才发出，耗时不受插件控制；
+# 登记时只写「首段永远不发」的兜底硬上限。60s 补发 TTL 在
+# after_message_sent 取走队列时即终结，不覆盖首段发送本身。
+_PENDING_FOLLOW_UP_HARD_TTL_SECONDS = _PENDING_FOLLOW_UP_TTL_SECONDS * 5
 
 
 @dataclass(slots=True)
@@ -35,6 +41,7 @@ class PendingFollowUp:
     delay_per_char: float
     delay_max: float
     expires_at: float
+    registered_at: float = 0.0
     lock: asyncio.Lock | None = None
     # 延迟策略与 smart 参数在注册时快照：补发是后台任务，
     # 不受中途配置变更影响；previous_segment 是已发送的上一段，
@@ -131,7 +138,8 @@ class FollowUpMixin:
             delay_base=settings.delay_base,
             delay_per_char=settings.delay_per_char,
             delay_max=settings.delay_max,
-            expires_at=time.monotonic() + _PENDING_FOLLOW_UP_TTL_SECONDS,
+            expires_at=time.monotonic() + _PENDING_FOLLOW_UP_HARD_TTL_SECONDS,
+            registered_at=time.monotonic(),
             delay_strategy=settings.delay_strategy,
             # 首条补发的「上一段」就是已经发送出去的首段。
             previous_segment=first_segment,
@@ -147,8 +155,11 @@ class FollowUpMixin:
 
     def _pop_pending_follow_up(self, pending_id: str) -> PendingFollowUp | None:
         """检索并提取处于挂起状态下的延迟补发上下文。"""
+        # 先取出目标再清理过期条目：首段发送耗时可能超过 TTL，
+        # 已由 after_message_sent 消费的队列不能被当作排队超时丢弃。
+        pending = self._pending_follow_ups.pop(pending_id, None)
         self._prune_expired_pending_follow_ups()
-        return self._pending_follow_ups.pop(pending_id, None)
+        return pending
 
     def _fast_forward_follow_ups(self, session: str) -> int:
         """同会话新消息到来时，把仍在排队的旧补发改为快速发送。
@@ -196,11 +207,33 @@ class FollowUpMixin:
                 if entry.segments:
                     logger.warning(
                         "智能分段补发队列等待超过 %.0fs，丢弃 %s 条未发送分段: %s",
-                        _PENDING_FOLLOW_UP_TTL_SECONDS,
+                        _PENDING_FOLLOW_UP_HARD_TTL_SECONDS,
                         len(entry.segments),
                         entry.session,
                     )
                 self._release_pending_lock(entry)
+        self._release_stale_pending_locks(now)
+
+    def _release_stale_pending_locks(self, now: float) -> None:
+        """首段迟迟没发出时让出会话锁，队列保留到硬 TTL。
+
+        未消费的 pending 从登记起就占着会话锁；宿主跳过 after_message_sent
+        或首段发送卡住时，同会话后续回复要等满整个硬 TTL（300s）。锁只保护
+        「同一会话的补发不交叉」，首段没发出的队列实际不会发送，先让锁出来；
+        队列仍等 after_message_sent 消费，A2-1 的 61–300s 场景不会丢分段。
+        """
+        for entry in self._pending_follow_ups.values():
+            if entry.lock is None or entry.registered_at <= 0:
+                continue
+            age = now - entry.registered_at
+            if age < _PENDING_LOCK_STALE_SECONDS:
+                continue
+            logger.info(
+                "智能分段首段 %.0fs 未发出，释放会话锁给新回复: %s",
+                age,
+                entry.session,
+            )
+            self._release_pending_lock(entry)
 
     def _track_follow_up_task(self, task: asyncio.Task[Any]) -> None:
         """追踪正在后台运行的异步补发任务，并在其完成后清理任务句柄。"""

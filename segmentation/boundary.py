@@ -788,12 +788,15 @@ def split_segments_at_bracket_boundaries(
         for part in split_text_at_brackets(masked):
             stripped_part = part.strip()
             if not stripped_part:
+                # 括号之间的纯空白不是独立段：贴回上一段，避免 (a) (b) 粘连。
+                if part and result:
+                    result[-1] += part
                 continue
             if re.match(r"^[_\-\*\s]{3,}$", stripped_part):
                 pending_prefix += stripped_part
                 continue
             result.append(
-                _restore_inline_atoms(pending_prefix + stripped_part, atoms)
+                _restore_inline_atoms(pending_prefix + part, atoms)
             )
             pending_prefix = ""
         if pending_prefix:
@@ -802,7 +805,6 @@ def split_segments_at_bracket_boundaries(
                 result[-1] += restored_prefix
             else:
                 result.append(restored_prefix)
-
     if not result:
         return result
         

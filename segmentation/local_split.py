@@ -7,9 +7,9 @@ from .core import _as_nonneg_int, is_non_natural_language, normalize_segments, s
 from .protection import has_protected_block, is_markdown_document, split_protected_blocks
 from .boundary import _PAUSE_BREAK_MIN_CHARS, _split_plain_text
 from .packing import (
-    apply_force_split_to_segments,
     apply_no_split_boundaries,
     attach_symbol_only_pieces,
+    force_split_outside_inline_atoms,
     _force_merge_to_max_segments,
     _hard_split_overlong,
     _is_unsplittable_segment,
@@ -129,10 +129,7 @@ def expand_under_split_natural_segments(
                 0,
                 pause_min_chars=pause_min_chars,
             )
-            if len(local_segments) > 1:
-                expanded.extend(local_segments)
-            else:
-                expanded.append(paragraph)
+            expanded.extend(local_segments)
     return normalize_segments(expanded, max_segments=0)
 
 
@@ -146,17 +143,19 @@ def local_fallback_split(
     no_split_around: list[str] | None = None,
     merge_short_tail: bool = False,
     short_tail_threshold: int = 2,
+    remove_thinking: bool = True,
 ) -> list[str]:
     """终极自愈兜底：本地纯逻辑高精切分，保护 JSON/Markdown 块并平衡长度。
 
     force_split_symbols 非空时在打包与边界过滤之后按符号再切分（§5.5）；
     no_split_around 非空时紧跟保护词的标点切点不参与选点，并在打包后作一次
     边界过滤（§5.4）；merge_short_tail 开启时末段过短并入前一段（§5.3）。
+    remove_thinking=False 时保留 thinking 标签与块内文字。
     """
     max_segments = _as_nonneg_int(max_segs)
     max_chars = _as_nonneg_int(max_chars_per_segment)
 
-    cleaned = strip_thinking_content(raw_text)
+    cleaned = strip_thinking_content(raw_text, remove_thinking=remove_thinking)
     if not cleaned:
         return []
 
@@ -212,7 +211,7 @@ def local_fallback_split(
     # §5.4 先于 §5.5：软约束边界过滤在强制再切分之前执行，保证强制切点
     # 不会被边界过滤合回；与 LLM 路径（model_output.py 重建后处理）次序一致。
     packed = apply_no_split_boundaries(packed, no_split_around, max_chars)
-    packed = apply_force_split_to_segments(packed, force_split_symbols)
+    packed = force_split_outside_inline_atoms(packed, force_split_symbols)
     packed = attach_symbol_only_pieces(packed, force_split_symbols)
     if max_segments > 0:
         packed = _merge_to_global_max(packed, max_segments, max_chars)

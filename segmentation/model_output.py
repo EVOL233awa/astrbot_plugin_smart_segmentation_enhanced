@@ -115,6 +115,13 @@ def align_prepared_in_outbound(
             if absorb.endswith(prep_lead[:k]):
                 head_end -= k
                 break
+    elif prepared[:1].isalnum():
+        # prepared 顶在 outbound 开头：前导的非字母数字（emoji/符号）不属于
+        # prepared（它以字母数字开头），是上游插件插入的内容，划给 head 保留。
+        lead_end = 0
+        while lead_end < len(outbound) and not outbound[lead_end].isalnum():
+            lead_end += 1
+        head_end = lead_end
 
     middle_end = _pos_after_alnum_count(outbound, head_end, len(prepared_key))
     if middle_end == -1:
@@ -353,6 +360,7 @@ def parse_segments_from_model_output(
     no_split_around: list[str] | None = None,
     merge_short_tail: bool = False,
     short_tail_threshold: int = 2,
+    remove_thinking: bool = True,
 ) -> list[str]:
     """解析模型分段输出。强类型防御机制包装。"""
     max_segs = _as_nonneg_int(max_segments)
@@ -362,6 +370,7 @@ def parse_segments_from_model_output(
         "no_split_around": no_split_around,
         "merge_short_tail": merge_short_tail,
         "short_tail_threshold": short_tail_threshold,
+        "remove_thinking": remove_thinking,
     }
 
     try:
@@ -397,7 +406,10 @@ def parse_segments_from_model_output(
         )
 
     except Exception:
-        fallback = strip_thinking_content(fallback_text).strip()
+        fallback = strip_thinking_content(
+            fallback_text,
+            remove_thinking=remove_thinking,
+        ).strip()
         return local_fallback_split(
             fallback,
             max_segs,

@@ -89,11 +89,16 @@ def verify_anchor_integrity(segments: list[str], anchors: list[str]) -> bool:
 
     恰好一次同时保证没有被拆到多个分段、没有跨分段丢失；顺序一致保证
     没有被重排。模型输出经重建后段文本来自 masked 原文，锚点必然精确。
+    只统计属于本次 anchors 集合的同形字样；原文自带的 ZZSEGxxxx 是普通
+    正文，不参与比较。
     """
+    anchor_set = set(anchors)
     found: list[str] = []
     for segment in segments:
         for match in _ANCHOR_RE.finditer(segment):
-            found.append(match.group(0))
+            token = match.group(0)
+            if token in anchor_set:
+                found.append(token)
     return found == anchors
 
 
@@ -116,7 +121,8 @@ def expand_segments_at_anchors(
             anchor = match.group(0)
             block = anchor_to_block.get(anchor)
             if block is None:
-                raise ValueError(f"重建分段包含未知锚点: {anchor}")
+                # 正文自带的同形字样不是本次生成的锚点，按普通文本处理。
+                continue
             before = segment[cursor : match.start()].strip()
             if before:
                 pieces.append((before, False))

@@ -6,7 +6,7 @@ import re
 from astrbot.api import logger
 
 from .core import is_non_natural_language
-from .protection import _MD_HR_RE, _MD_LIST_LINE_RE, _MD_TABLE_LINE_RE, has_protected_block, is_markdown_document, split_protected_blocks
+from .protection import _MD_HR_RE, _MD_LIST_LINE_RE, _MD_QUOTE_RE, _is_table_delimiter, _is_table_row, has_protected_block, is_markdown_document, split_protected_blocks
 
 _MDIT_INSTANCE = None
 
@@ -28,6 +28,10 @@ except Exception:
 _HEAVY_FALLBACK_WARNED = False
 
 
+# 私有区单字符：markdown-it 不解析，渲染前替换行首 `>`，渲染后还原。
+_QUOTE_PLACEHOLDER = "\ue000"
+
+
 def _warn_heavy_fallback_once() -> None:
     global _HEAVY_FALLBACK_WARNED
     if _HEAVY_FALLBACK_WARNED:
@@ -41,13 +45,35 @@ def _warn_heavy_fallback_once() -> None:
 def _render_heavy_markdown(text: str) -> str:
     """Render pre-cleaned Markdown to plain text when the real renderer exists."""
     if _MDIT_AVAILABLE and _MDIT_INSTANCE is not None:
+        # mdit 按 CommonMark 把行首 `>` 当引用标记；颜文字 `>_<`/`><` 的 `>`
+        # 先用私有区字符占位，渲染后还原，否则 mdit 会吞掉这个 `>`。
+        protected = re.sub(
+            r"^>(?=[_<])", _QUOTE_PLACEHOLDER, text, flags=re.MULTILINE
+        )
         try:
-            return _MDIT_INSTANCE.render(text).strip()
+            rendered = _MDIT_INSTANCE.render(protected).strip()
         except Exception:
             _warn_heavy_fallback_once()
-    else:
-        _warn_heavy_fallback_once()
+            rendered = protected
+        return rendered.replace(_QUOTE_PLACEHOLDER, ">")
+    _warn_heavy_fallback_once()
     return text
+
+
+def _strip_italic_marker(match: re.Match[str]) -> str:
+    """Drop one `*...*` pair unless a star touches an ASCII word character.
+
+    星号任一侧紧贴 ASCII 字母/数字时是乘法或单词内符号（`2*3*4`、
+    `foo*bar*baz`），不能当强调删除；中文等非 ASCII 字符相邻时仍按斜体清洗。
+    """
+    text = match.string
+    before = text[match.start() - 1] if match.start() else ""
+    after = text[match.end()] if match.end() < len(text) else ""
+    if (before.isascii() and before.isalnum()) or (
+        after.isascii() and after.isalnum()
+    ):
+        return match.group(0)
+    return match.group(1)
 
 
 def _clean_inline_markdown(text: str) -> str:
@@ -58,7 +84,11 @@ def _clean_inline_markdown(text: str) -> str:
     cleaned = re.sub(r"\*\*(.+?)\*\*", r"\1", cleaned)
     # 强调标记的内侧不接空白：`5 * 3 = 15` 是乘法，不是斜体，
     # 星号必须原样保留；`*斜体*`（中文常见，无空格）仍正常清洗。
-    cleaned = re.sub(r"(?<!\*)\*(?![\s*])(.+?)(?<![\s*])\*(?!\*)", r"\1", cleaned)
+    cleaned = re.sub(
+        r"(?<!\*)\*(?![\s*])(.+?)(?<![\s*])\*(?!\*)",
+        _strip_italic_marker,
+        cleaned,
+    )
     # 删除线必须不紧贴单词/数字：`10~~20 度` 是区间，不是删除线。
     cleaned = re.sub(r"(?<!\w)~~(?!\s)(.+?)(?<!\s)~~(?!\w)", r"\1", cleaned)
     cleaned = re.sub(r"(?<!`)`(?!`)([^`]+)(?<!`)`(?!`)", r"\1", cleaned)
@@ -80,7 +110,7 @@ def _strip_table_markers(chunk: str) -> str:
     rows: list[str] = []
     for line in chunk.splitlines():
         stripped = line.strip()
-        if re.match(r"^\|[\s:\-|]+\|\s*$", stripped):
+        if _is_table_delimiter(stripped) or re.match(r"^\|[\s:\-|]+\|\s*$", stripped):
             continue
         cells = [cell.strip() for cell in stripped.strip("|").split("|")]
         rows.append(" | ".join(cells))
@@ -108,7 +138,8 @@ def _clean_heavy_text_regex(text: str) -> str:
         if _MD_HR_RE.match(stripped):
             continue
         cleaned = re.sub(r"^#{1,6}\s+", "", line)
-        cleaned = re.sub(r"^>\s?", "", cleaned)
+        if _MD_QUOTE_RE.match(cleaned):
+            cleaned = re.sub(r"^>\s?", "", cleaned)
         cleaned = re.sub(r"^[-*+]\s+", "", cleaned)
         cleaned = re.sub(r"^\d+\.\s+", "", cleaned)
         cleaned = _clean_inline_markdown(cleaned)
@@ -127,14 +158,15 @@ def _clean_markdown_region_heavy(text: str) -> str:
         stripped = line.strip()
         if _MD_HR_RE.match(stripped):
             continue
-        if _MD_TABLE_LINE_RE.match(stripped):
+        if _is_table_row(stripped):
             cleaned_lines.append(_strip_table_markers(line))
             continue
         if _MD_LIST_LINE_RE.match(stripped):
             cleaned_lines.append(_strip_list_markers(line))
             continue
         cleaned = re.sub(r"^#{1,6}\s+", "", line)
-        cleaned = re.sub(r"^>\s?", "", cleaned)
+        if _MD_QUOTE_RE.match(cleaned):
+            cleaned = re.sub(r"^>\s?", "", cleaned)
         cleaned = re.sub(r"^[-*+]\s+", "", cleaned)
         cleaned = re.sub(r"^\d+\.\s+", "", cleaned)
         cleaned_lines.append(_clean_inline_markdown(cleaned))
@@ -144,12 +176,15 @@ def _clean_markdown_region_heavy(text: str) -> str:
 def _split_code_spans(text: str) -> list[str]:
     """Split text into closed code spans and ordinary Markdown spans.
 
-    闭合围栏必须与开启围栏等长（CommonMark），未闭合的围栏留在文本流里
-    按正文处理。
+    闭合围栏必须与开启围栏同字符且不短于开启围栏（CommonMark），多余的
+    同字符一并吞掉；未闭合的围栏留在文本流里按正文处理。
     """
     parts: list[str] = []
     cursor = 0
-    for match in re.finditer(r"(`{3,})[\s\S]*?\1", text):
+    for match in re.finditer(
+        r"(?:(?<!`)(?P<bt>`{3,})(?!`)[\s\S]*?(?P=bt)`*|(?<!~)(?P<tl>~{3,})(?!~)[\s\S]*?(?P=tl)~*)",
+        text,
+    ):
         if match.start() > cursor:
             parts.append(text[cursor : match.start()])
         parts.append(match.group(0))
@@ -160,19 +195,22 @@ def _split_code_spans(text: str) -> list[str]:
 
 
 def _is_opening_fence_line(line: str) -> bool:
-    """整行开启围栏：行首反引号串，其后为空或信息串。
+    """整行开启围栏：行首围栏串，其后为空或信息串。
 
-    同一行再出现反引号说明这是行内代码（`` ```code``` ``），不是围栏行。
+    同一行再出现同种围栏字符说明这是行内代码（`` ```code``` ``），不是围栏行。
     """
-    match = re.match(r"^\s*(`{3,})(.*)$", line)
+    match = re.match(r"^\s*(`{3,}|~{3,})(.*)$", line)
     if match is None:
         return False
-    return "`" not in match.group(2)
+    return match.group(1)[0] not in match.group(2)
 
 
 def _clean_code_span(span: str) -> str:
     lines = span.splitlines()
-    if len(lines) < 2 or re.match(r"^\s*`{3,}\s*$", lines[-1]) is None:
+    if (
+        len(lines) < 2
+        or re.match(r"^\s*(?:`{3,}|~{3,})\s*$", lines[-1]) is None
+    ):
         # 未闭合围栏（含单行行内 ```code```）：按正文原样保留，不剥围栏行。
         return span
     if _is_opening_fence_line(lines[0]):
@@ -185,7 +223,7 @@ def _clean_heavy_chunk_with_mdit(text: str, *, markdown_region: bool) -> str:
     """Clean heavy Markdown while keeping code block bodies untouched by the renderer."""
     cleaned_parts: list[str] = []
     for part in _split_code_spans(text):
-        if part.startswith("```"):
+        if part.startswith(("```", "~~~")):
             cleaned_parts.append(_clean_code_span(part))
             continue
         if markdown_region:

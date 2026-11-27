@@ -41,6 +41,12 @@ class SegmentationSettings:
     smart_decrease_seconds: float = 0.25
     max_chars_per_segment: int = 180
     markdown_clean_mode: str = "light"
+    # AstrBot <4.29.0 不会自行处理成对 <thinking>；4.29.0 起宿主会处理。
+    # 默认开启以覆盖旧版本。
+    strip_thinking_tags: bool = True
+    # AstrBot <4.20.0 的 QQ 官方适配器 send_by_session 直接抛
+    # NotImplementedError；4.20.0 起支持。默认关闭，整条发送更安全。
+    qq_official_follow_up: bool = False
     ellipsis_pause_min_chars: int = 4
     # §5.3-5.5：短尾合并默认关闭；保护词与强制分隔符默认空列表。
     force_split_symbols: list[str] = field(default_factory=list)
@@ -88,6 +94,7 @@ class SettingsMixin:
             "no_split_around": settings.no_split_around,
             "merge_short_tail": settings.merge_short_tail,
             "short_tail_threshold": settings.short_tail_threshold,
+            "remove_thinking": settings.strip_thinking_tags,
         }
 
     def _resolve_segmenter(self) -> str:
@@ -247,6 +254,14 @@ class SettingsMixin:
                 self._get_config_value("markdown_clean_mode", "light"),
                 "light",
             ),
+            strip_thinking_tags=self._as_bool(
+                self._get_config_value("strip_thinking_tags", True),
+                True,
+            ),
+            qq_official_follow_up=self._as_bool(
+                self._get_config_value("qq_official_follow_up", False),
+                False,
+            ),
             temperature=self._as_float(
                 self._get_config_value("temperature", 0.3),
                 0.3,
@@ -339,7 +354,7 @@ class SettingsMixin:
         """将输入值转换为整型，若失败则安全降级到默认值。"""
         try:
             return int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return default
 
     @staticmethod
