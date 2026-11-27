@@ -4,6 +4,42 @@ AstrBot 智能分段插件（增强版）的版本变更记录。
 
 格式遵循 [Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/)，版本号遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [1.5.8] - 2026-11-28
+
+正文不再被清洗或切分吞掉。
+
+### Added
+
+- `strip_thinking_tags`（默认开启）：开启时删除代码块外的 `<thinking>…</thinking>` 整段，关闭后插件完全不碰 thinking 标签。AstrBot 4.29.0 之前需要开启；4.29.0 起宿主会自己处理，可关闭以避免插件改写正文。
+- `qq_official_follow_up`（默认关闭）：QQ 官方（非 webhook）平台默认整条发送；AstrBot 4.20.0 及以上可开启分段补发。
+
+### Changed
+
+- 段数上限与单条长度上限无法同时满足时，优先保证段数上限，单条可能超过 `max_chars_per_segment`。
+
+### Fixed
+
+- 正文里出现未闭合的 `<thinking>` 时，后面的内容不再被整段删除。
+- 行内代码里的 `|` 不再被强制切分切开：local 引擎与含受保护块的锚点路径都跳过行内代码、链接与 URL。
+- 含代码块的回复里，只含 `|` 的片段改挂到下一段，不再拼到闭合围栏后把围栏行变成 ```` ```| ````。
+- 配置全角 `｜` 作强制切分符号时，llm 引擎对半角 `|` 也会切分，与 local 引擎和配置页的全半角等价承诺一致。
+- 括号之间只有一个空格时不再丢失，`version (beta) (final)` 不会粘成 `(beta)(final)`。
+- 两侧都省略竖线的 Markdown 表格（`项目 | 状态`）在 heavy 清洗下也会去掉分隔行。
+- `min_length: inf` 这类配置不再让设置解析抛异常，回落到默认值。
+- QQ 官方（非 webhook）平台默认整条发送，旧版宿主不再出现只收到首段、其余分段静默丢失。
+- 正文里出现与分段锚点同形的 `ZZSEG…` 字样时按普通文本处理，不再导致整条回复降级为本地切分。
+- 代码块里的 `<tool_call>`、`<function_call>`、`[System:` 原样保留；未闭合的协议标签不再吞掉其后的整段回复。
+- 引用里的代码块能正常闭合：`> ```python` 的闭围栏写成裸 ` ``` ` 时，后面的正文不再被并进代码块；引用正文后面的围栏（`> 示例：```python`）同样处理。
+- `2*3*4`、`4*5` 这类乘法写法不再被当成斜体删成 `234`、`45`；`*斜体*` 仍正常清洗。
+- heavy 清洗下 `>_<`、`><` 的 `>` 不再被 Markdown 渲染删掉；普通引用 `> 引用` 仍照常去掉标记。
+- heavy 清洗下 `~~~` 围栏里的代码原样保留，不再删掉 `# 标题`、`---` 行或改写 `**粗体**`；闭合围栏比开启围栏长时（四个反引号闭合三个）也不再残留反引号。
+- 段数需要压到上限时，正文不再拼到代码块的闭合围栏后面；含代码块的混合段改用空行分隔合并。
+- 只对模型回复分段：`/help`、`/status` 等指令结果和其他插件生成的纯文本回复不再被插件拆条。
+- 一次失败留下的空缓存条目不再压住同内容正常的分段结果，结果不再取决于两条缓存的先后顺序。
+- 正文里的 `|` 不再因分段占位符被切开而丢失：还原数量对不上时整条改走本地切分。
+- 上游插件在回复头尾追加的 emoji、标点不再被预处理分段替换吞掉，跟在首段或末段后面发出。
+- 旧回复的首段卡住时，同一会话的新回复不再被旧补发队列占住会话锁最长 5 分钟才分段。
+
 ## [1.5.7] - 2026-11-27
 
 分段不再重复、丢失原文或切坏动作段。
@@ -425,3 +461,4 @@ AstrBot 智能分段插件（增强版）的版本变更记录。
 [1.5.5]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.5
 [1.5.6]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.6
 [1.5.7]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.7
+[1.5.8]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation_enhanced/releases/tag/v1.5.8
